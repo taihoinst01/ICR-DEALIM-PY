@@ -26,8 +26,8 @@ ftpPort = 21 # FTP 서버 PORT
 ftpId = 'daerimicr' # FTP 서버 접속 ID
 ftpPw = 'daerimicr123!@#' # FTP 서버 접속 PASSWORD
 receiveFtpPath = "/uploads" # FTP에서 파일을 받을 경로
-#pyFilePath = '/home/daerimicr/icrRest/uploads/' # python 서버 파일 경로
-pyFilePath = '/Users/Taiho/Desktop/icrRest/uploads/' # python 서버 파일 경로
+pyFilePath = '/home/daerimicr/icrRest/uploads/' # python 서버 파일 경로
+#pyFilePath = '/Users/Taiho/Desktop/icrRest/uploads/' # python 서버 파일 경로
 
 # encode
 def stringToBase64(s):
@@ -554,6 +554,7 @@ def downloadFtpFile(upload_path, filename):
     ftp.retrbinary("RETR " + filename ,open(filename, 'wb').write)
     
     ftp.close() 
+    # os.chdir("/home/daerimicr/icrRest/")
     os.chdir("/Users/Taiho/Desktop/icrRest/")
 
 def uploadFtpFile(upload_path, filename):
@@ -567,6 +568,7 @@ def uploadFtpFile(upload_path, filename):
     
     myfile.close()
     ftp.close() 
+    # os.chdir("/home/daerimicr/icrRest/")
     os.chdir("/Users/Taiho/Desktop/icrRest/")
 if __name__=='__main__':
     app.run(host='0.0.0.0',port=5000,debug=True)
