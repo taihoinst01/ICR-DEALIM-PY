@@ -31,9 +31,10 @@ ftpPort = 21 # FTP 서버 PORT
 ftpId = 'daerimicr' # FTP 서버 접속 ID
 ftpPw = 'daerimicr123!@#' # FTP 서버 접속 PASSWORD
 receiveFtpPath = "/uploads" # FTP에서 파일을 받을 경로
-pyFilePath = '/home/daerimicr/icrRest/uploads/' # python 서버 파일 경로
-#pyFilePath = '/Users/Taiho/Desktop/icrRest/uploads/' # python 서버 파일 경로
-
+#pyFilePath = '/home/daerimicr/icrRest/uploads/' # python 서버 파일 경로
+#osChdir = '/home/daerimicr/icrRest/'
+pyFilePath = '/Users/Taiho/Desktop/icrRest/uploads/' # python 서버 파일 경로
+osChdir = '/Users/Taiho/Desktop/icrRest/'
 # encode
 def stringToBase64(s):
     return base64.b64encode(s.encode('utf-8'))
@@ -1199,8 +1200,7 @@ def downloadFtpFile(upload_path, filename):
     ftp.retrbinary("RETR " + filename ,open(filename, 'wb').write)
     
     ftp.close() 
-    #os.chdir("/Users/Taiho/Desktop/icrRest/")
-    os.chdir("/home/daerimicr/icrRest/")
+    os.chdir(osChdir)
 
 def uploadFtpFile(upload_path, filename):
     ftp = ftplib.FTP()
@@ -1214,7 +1214,7 @@ def uploadFtpFile(upload_path, filename):
     myfile.close()
     ftp.close() 
     #os.chdir("/Users/Taiho/Desktop/icrRest/")
-    os.chdir("/home/daerimicr/icrRest/")
+    os.chdir(osChdir)
 
 
 def companyInfoInsert(ocrData, docTopType, docType):
