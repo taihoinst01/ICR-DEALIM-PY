@@ -29,6 +29,7 @@
   <ItemGroup>
     <Content Include=".gitattributes" />
     <Content Include=".gitignore" />
+    <Content Include="companyInfo.txt" />
     <Content Include="docSentence.txt" />
     <Content Include="nohup.out" />
     <Content Include="requirements.txt" />
@@ -36,6 +37,7 @@
     <Content Include="templates\insertDocSentence.html" />
     <Content Include="templates\insertSplitData.html" />
     <Content Include="templates\upload.html" />
+    <Content Include="typoData.txt" />
     <Content Include="__pycache__\linedel.cpython-36.pyc" />
     <Content Include="__pycache__\linedel.cpython-37.pyc" />
     <Content Include="__pycache__\lineDeleteAndNoiseDelete.cpython-36.pyc" />
@@ -46,6 +48,8 @@
     <Compile Include="linedel.py" />
     <Compile Include="lineDeleteAndNoiseDelete.py" />
     <Compile Include="lineDelTest.py" />
+    <Compile Include="lineDetection.py" />
+    <Compile Include="main4_correction.py" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
