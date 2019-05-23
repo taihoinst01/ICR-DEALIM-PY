@@ -380,7 +380,7 @@ def getOcrInfo(item):
                     height = int(word.bounding_box.vertices[3].y) - int(word.bounding_box.vertices[0].y)
 
                     location = str(x) + ',' + str(y) + ',' + str(width) + ',' + str(height)
-                    if x > 0 and y > 0 and word_text.replace('"','') != "":
+                    if x > 0 and y > 0 and word_text.replace('"','&quot;') != "":
                         ocrData.append({"location": location, "text":word_text})
 
                     # print('Word text: {}, location:{},{},{},{}'.format(word_text, x, y, width, height))
