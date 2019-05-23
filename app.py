@@ -380,7 +380,7 @@ def getOcrInfo(item):
                     height = int(word.bounding_box.vertices[3].y) - int(word.bounding_box.vertices[0].y)
 
                     location = str(x) + ',' + str(y) + ',' + str(width) + ',' + str(height)
-                    if x > 0 and y > 0:
+                    if x > 0 and y > 0 and word_text.replace('"','') != "":
                         ocrData.append({"location": location, "text":word_text})
 
                     # print('Word text: {}, location:{},{},{},{}'.format(word_text, x, y, width, height))
@@ -410,7 +410,7 @@ def getOcrInfo(item):
             # 같은 라인에 거리가 가까운 text는 합친다
             isCombiend, combineData = distanceParams(ocrData[idx], mostCloseWordSameLine(ocrData[idx], extractSameLine(ocrData[idx], ocrData, 3)))         
             if combineData:
-                if isCombiend < 21:
+                if isCombiend < 12:
                     ocrData, idx = combiendText(ocrData, combineData, idx, originX, originY)
 
                 # 같은 줄에 다음 text와 합쳐서 레이블의 부분일 경우 합친다
