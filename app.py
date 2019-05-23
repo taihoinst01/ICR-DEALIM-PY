@@ -370,7 +370,7 @@ def getOcrInfo(item):
                 for word in paragraph.words:
                     word_text = ''
                     for symbol in word.symbols:
-                        if symbol.confidence > 0.4:
+                        if symbol.confidence > 0.3:
                             word_text += symbol.text
 
                     x = word.bounding_box.vertices[0].x
