@@ -372,7 +372,7 @@ def getOcrInfo(item):
                     for symbol in word.symbols:
                         if symbol.confidence > 0.35:
                             word_text += symbol.text
-                    word_text = word_text.replace('"','&quot;').replace("'","&#39;").replace(',','&#44;')
+                    word_text = word_text.replace('"','&quot;')
 
                     x = word.bounding_box.vertices[0].x
                     y = word.bounding_box.vertices[0].y
