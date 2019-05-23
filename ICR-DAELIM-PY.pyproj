@@ -45,10 +45,14 @@
   <ItemGroup>
     <Compile Include="app.py" />
     <Compile Include="application.py" />
+    <Compile Include="app_20190522.py" />
+    <Compile Include="app_bak.py" />
     <Compile Include="linedel.py" />
     <Compile Include="lineDeleteAndNoiseDelete.py" />
     <Compile Include="lineDelTest.py" />
     <Compile Include="lineDetection.py" />
+    <Compile Include="lineDetection_20190522.py" />
+    <Compile Include="lineDetection_bak.py" />
     <Compile Include="main4_correction.py" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

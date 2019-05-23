@@ -85,6 +85,7 @@ def upload_file():
                 # x, y, w, h = lineDect.main(stringToBase64(upload_path + "chg_" + item))
                 # lineDeleteAndNoiseDelete
                 # lineDel.main(stringToBase64(upload_path + "chg_" + item))
+                getRotateImage()
                 lineDect.main(stringToBase64(upload_path + item))
                 imgResize(upload_path + item)
                 obj = pyOcr(upload_path + item, convertFilename)
@@ -145,8 +146,10 @@ def upload_file_google():
                 # x, y, w, h = lineDect.main(stringToBase64(upload_path + "chg_" + item))
                 # lineDeleteAndNoiseDelete
                 # lineDel.main(stringToBase64(upload_path + "chg_" + item))
-                lineDect.main(stringToBase64(upload_path + item))
+                getRotateImage(upload_path + item)
+                # lineDect.main(stringToBase64(upload_path + item))
                 imgResize(upload_path + item)
+                get_croped(upload_path + item)
                 obj = pyOcr_google(upload_path + item, convertFilename)
                 retResult.append(obj)
         else:
@@ -286,14 +289,6 @@ def pyOcr_google(item, convertFilename):
     # doctype 추출 similarity - 임교진
     docTopType, docType, maxNum = findDocType(ocrData)
     # docTopType, docType, maxNum = 50, 70, 0.40236686390532544
-
-
-    # print(docTopType, docType)
-
-    # 업체명,사업자번호,주소,전화 입력 
-    ocrData = companyInfoInsert(ocrData, docTopType, docType)
-
-
     # Y축 데이터 X축 데이터 추출
     # ocrData = compareLabel(ocrData)
     # ocrData = extractCNNData(ocrData)
@@ -368,10 +363,9 @@ def getOcrInfo(item):
                 # print('Paragraph confidence: {}'.format(paragraph.confidence))
 
                 for word in paragraph.words:
-                    word_text = ''
-                    for symbol in word.symbols:
-                        if symbol.confidence > 0.4:
-                            word_text += symbol.text
+                    word_text = ''.join([
+                        symbol.text for symbol in word.symbols
+                    ])
 
                     x = word.bounding_box.vertices[0].x
                     y = word.bounding_box.vertices[0].y
@@ -829,7 +823,7 @@ def verticalCheck(lblLoc, entLoc, plus, minus):
 def convertPdfToImage(upload_path, pdf_file):
 
     try:
-        pages = convert_from_path(upload_path + pdf_file, dpi=500, output_folder=None, first_page=None,
+        pages = convert_from_path(upload_path + pdf_file, dpi=300, output_folder=None, first_page=None,
                                   last_page=None,
                                   fmt='ppm', thread_count=1, userpw=None, use_cropbox=False, strict=False,
                                   transparent=False)
@@ -838,7 +832,7 @@ def convertPdfToImage(upload_path, pdf_file):
         for page in pages:
             filename = "%s-%d.jpg" % (pdf_file, pages.index(page))
             print('filename===>' + filename)
-            page.save(upload_path + filename, "JPEG", dpi=(500,500))
+            page.save(upload_path + filename, "JPEG", dpi=(300,300))
             # page.save(upload_path + "chg_" + filename, "JPEG", dpi=(300,300))
             filenames.append(filename)
         return filenames
@@ -1228,56 +1222,141 @@ def uploadFtpFile(upload_path, filename):
 
 def companyInfoInsert(ocrData, docTopType, docType):
     try:
-        # print(ocrData)
-        search = "XX"
         compnayInfoList = []
         file = open("companyInfo.txt", "r", encoding="UTF-8-sig")
         for line in file:
             if line is None:
                 print("companyInfo line is Null")
             else:
-                companyDocTopType, companyDocType, companyName, companyRegistNo = line.strip().split("||")
+                companyDocTopType, companyDocType, companyName, companyRegistNo, companyAddress, companyPhoneNumber = line.strip().split("||")
                 if int(docTopType) == int(companyDocTopType):
                     if int(docType) == int(companyDocType):
                         dic = {}
-                        #print(companyName.find(search))
-                        if companyName.find(search)  == -1:
-                            dic["companyName"] = companyName
-                        #print(companyRegistNo.find(search))
-                        if companyRegistNo.find(search)  == -1:
-                            dic["companyRegistNo"] = companyRegistNo
+                        dic["companyName"] = companyName
+                        dic["companyRegistNo"] = companyRegistNo
+                        dic["companyAddress"] = companyAddress
+                        dic["companyPhoneNumber"] = companyPhoneNumber
                         compnayInfoList.append(dic)
-                        #print(compnayInfoList)
         file.close()
 
         for rows in compnayInfoList:
-            if int(docTopType) == 58:
-                if "companyName" in rows:
-                    obj = {}
-                    obj["entryLbl"] = "760"
-                    obj["location"] = rows["companyName"].split("@@")[1]
-                    obj["text"] = rows["companyName"].split("@@")[0]
-                    ocrData.append(obj)
+            obj = {}
+            obj["entryLbl"] = "760"
+            obj["location"] = rows["companyName"].split("@@")[1]
+            obj["text"] = rows["companyName"].split("@@")[0]
+            obj["originText"] = rows["companyName"].split("@@")[0]
+            ocrData.append(obj)
 
-                if "companyRegistNo" in rows:
-                    obj = {}
-                    obj["entryLbl"] = "761"
-                    obj["location"] = rows["companyRegistNo"].split("@@")[1]
-                    obj["text"] = rows["companyRegistNo"].split("@@")[0]
-                    ocrData.append(obj)
+            obj = {}
+            obj["entryLbl"] = "761"
+            obj["location"] = rows["companyRegistNo"].split("@@")[1]
+            obj["text"] = rows["companyRegistNo"].split("@@")[0]
+            obj["originText"] = rows["companyRegistNo"].split("@@")[0]
+            ocrData.append(obj)
 
-            if int(docTopType) == 51:
-                if "companyName" in rows:
-                    obj = {}
-                    obj["entryLbl"] = "502"
-                    obj["location"] = rows["companyName"].split("@@")[1]
-                    obj["text"] = rows["companyName"].split("@@")[0]
-                    ocrData.append(obj)
-        #print(ocrData) 
+            obj = {}
+            obj["entryLbl"] = "762"
+            obj["location"] = rows["companyAddress"].split("@@")[1]
+            obj["text"] = rows["companyAddress"].split("@@")[0]
+            obj["originText"] = rows["companyAddress"].split("@@")[0]
+            ocrData.append(obj)
+   
+            obj = {}
+            obj["entryLbl"] = "763"
+            obj["location"] = rows["companyPhoneNumber"].split("@@")[1]
+            obj["text"] = rows["companyPhoneNumber"].split("@@")[0]
+            obj["originText"] = rows["companyPhoneNumber"].split("@@")[0]
+            ocrData.append(obj)
         return ocrData
 
     except Exception as ex:
-        raise Exception(str(
-            {'code': 500, 'message': 'companyInfoInsert error', 'error': str(ex).replace("'", "").replace('"', '')}))
+        raise Exception(str({'code':500, 'message':'companyInfoInsert error', 'error':str(ex).replace("'","").replace('"','')}))
+
+def get_croped(rotated):
+
+    x, y, w, h = getXYWH(rotated)
+    print(x, y, w, h)
+    getImg = cv2.imread(rotated)
+
+    crop = getImg[y:y + h, x:x + w]  # create a cropped region of the gray image
+    cv2.imwrite(rotated, crop)
+
+
+def getXYWH(rotated):
+
+    client = vision.ImageAnnotatorClient()
+    item1 = cv2.imread(rotated)
+    success, encoded_image = cv2.imencode('.jpg', item1)
+    content = encoded_image.tobytes()
+
+    image = vision.types.Image(content=content)
+
+    response = client.document_text_detection(image=image)
+
+    x = response.text_annotations[0].bounding_poly.vertices[0].x
+    y = response.text_annotations[0].bounding_poly.vertices[0].y
+    w = response.text_annotations[0].bounding_poly.vertices[1].x
+    h = response.text_annotations[0].bounding_poly.vertices[2].y
+
+    if (x < 0):
+        x = 0
+
+    if (y < 0):
+        y = 0
+
+    return x, y, w, h
+
+def getRotateImage(item):
+
+    client = vision.ImageAnnotatorClient()
+    item1 = cv2.imread(item)
+    success, encoded_image = cv2.imencode('.jpg', item1)
+    content = encoded_image.tobytes()
+
+    # with io.open(item, 'rb') as image_file:
+    #     content = image_file.read()
+
+    image = vision.types.Image(content=content)
+
+    response = client.document_text_detection(image=image)
+    # content = encoded_image.tobytes()
+
+    mydegrees = getAngleFromGoogle(response)
+    image = cv2.imread(item)
+
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+
+    M = cv2.getRotationMatrix2D(center, mydegrees, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h),
+                             flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    # cv2.imshow("Cropped and thresholded image", cv2.resize(rotated, None, fx=0.25, fy=0.25))
+    # cv2.waitKey(0)
+    cv2.imwrite(item, rotated)
+    return rotated
+
+def getAngleFromGoogle(response):
+    first = []
+    last =[]
+    maxlen = 0
+    for page in response.full_text_annotation.pages:
+        for block in page.blocks:
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    if len(word.symbols) > maxlen:
+                        maxlen = len(word.symbols)
+                        first = []
+                        last = []
+                        for symbol in word.symbols:
+                            if len(first) == 0:
+                                first.append(symbol.bounding_box.vertices[0].x)
+                                first.append(symbol.bounding_box.vertices[0].y)
+                            last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
+
+    myradians = math.atan2(first[1] - last[1], first[0] - last[0])
+    mydegrees = math.degrees(myradians)
+    mydegrees = mydegrees + 180
+    return mydegrees
+
 if __name__=='__main__':
     app.run(host='0.0.0.0',port=5000,debug=True)

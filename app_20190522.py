@@ -288,7 +288,7 @@ def pyOcr_google(item, convertFilename):
     # docTopType, docType, maxNum = 50, 70, 0.40236686390532544
 
 
-    # print(docTopType, docType)
+    print(docTopType, docType)
 
     # 업체명,사업자번호,주소,전화 입력 
     ocrData = companyInfoInsert(ocrData, docTopType, docType)
@@ -368,10 +368,9 @@ def getOcrInfo(item):
                 # print('Paragraph confidence: {}'.format(paragraph.confidence))
 
                 for word in paragraph.words:
-                    word_text = ''
-                    for symbol in word.symbols:
-                        if symbol.confidence > 0.4:
-                            word_text += symbol.text
+                    word_text = ''.join([
+                        symbol.text for symbol in word.symbols
+                    ])
 
                     x = word.bounding_box.vertices[0].x
                     y = word.bounding_box.vertices[0].y
@@ -829,7 +828,7 @@ def verticalCheck(lblLoc, entLoc, plus, minus):
 def convertPdfToImage(upload_path, pdf_file):
 
     try:
-        pages = convert_from_path(upload_path + pdf_file, dpi=500, output_folder=None, first_page=None,
+        pages = convert_from_path(upload_path + pdf_file, dpi=300, output_folder=None, first_page=None,
                                   last_page=None,
                                   fmt='ppm', thread_count=1, userpw=None, use_cropbox=False, strict=False,
                                   transparent=False)
@@ -838,7 +837,7 @@ def convertPdfToImage(upload_path, pdf_file):
         for page in pages:
             filename = "%s-%d.jpg" % (pdf_file, pages.index(page))
             print('filename===>' + filename)
-            page.save(upload_path + filename, "JPEG", dpi=(500,500))
+            page.save(upload_path + filename, "JPEG", dpi=(300,300))
             # page.save(upload_path + "chg_" + filename, "JPEG", dpi=(300,300))
             filenames.append(filename)
         return filenames
@@ -1240,14 +1239,14 @@ def companyInfoInsert(ocrData, docTopType, docType):
                 if int(docTopType) == int(companyDocTopType):
                     if int(docType) == int(companyDocType):
                         dic = {}
-                        #print(companyName.find(search))
+                        # print(companyName.find(search))
                         if companyName.find(search)  == -1:
                             dic["companyName"] = companyName
-                        #print(companyRegistNo.find(search))
+                        # print(companyRegistNo.find(search))
                         if companyRegistNo.find(search)  == -1:
                             dic["companyRegistNo"] = companyRegistNo
                         compnayInfoList.append(dic)
-                        #print(compnayInfoList)
+                        # print(compnayInfoList)
         file.close()
 
         for rows in compnayInfoList:
@@ -1273,11 +1272,12 @@ def companyInfoInsert(ocrData, docTopType, docType):
                     obj["location"] = rows["companyName"].split("@@")[1]
                     obj["text"] = rows["companyName"].split("@@")[0]
                     ocrData.append(obj)
-        #print(ocrData) 
+
         return ocrData
 
     except Exception as ex:
         raise Exception(str(
             {'code': 500, 'message': 'companyInfoInsert error', 'error': str(ex).replace("'", "").replace('"', '')}))
+
 if __name__=='__main__':
     app.run(host='0.0.0.0',port=5000,debug=True)

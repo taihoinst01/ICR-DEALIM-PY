@@ -8,6 +8,9 @@ import uuid
 import math
 import linedel as lineDel
 from pdf2image import convert_from_path, convert_from_bytes
+from google.cloud import vision
+import io
+
 #from google.cloud import vision
 #지워야할 수평 선의 두께
 deleteHorizontalLineWeight = 2
@@ -15,22 +18,47 @@ deleteHorizontalLineWeight = 2
 deleteVerticalLineWeight = 2
 
 def main():
-    filefolder = '/home/daerimicr/icrRest/error_20190520/'
-    file_list = os.listdir('/home/daerimicr/icrRest/error_20190520')
+    filefolder = '/home/daerimicr/icrRest/test/'
+    file_list = os.listdir('/home/daerimicr/icrRest/test')
+    # filefolder = 'C:/ICR/sinsung/'
+    # file_list = os.listdir('C:/ICR/sinsung')
 
     for singlefile in file_list:
         if os.path.splitext(singlefile)[1] == ".pdf":
             print(singlefile)
+
             fileNames = convertPdfToImage(filefolder, singlefile)
             # for item in fileNames:
             print(fileNames)
-            rtnImg = angle_rotation(filefolder + fileNames[0])
+
+            rtnImg = getRotateImage(filefolder + fileNames[0])
+
+            # rtnImg = angle_rotation(filefolder + fileNames[0])
+
+            gray = cv2.cvtColor(rtnImg, cv2.COLOR_BGR2GRAY)  # convert to grayscale
+
+            ret, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            x, y, w, h = cv2.boundingRect(gray)  # create a rectangle around those points
+            x, y, w, h = x + 30, y, w, h  # make the box a little bigger
+            # 상하좌우 일정 부분 크롭
+            rtnImg = rtnImg[y:y + h, x:x + w]  # create a cropped region of the gray image
+
             # cv2.imshow("Cropped and thresholded image", rtnImg)
             # cv2.waitKey(0)
-            rtnImg = get_croped(rtnImg)
+            # rtnImg = get_croped(rtnImg)
             # cv2.imshow("Cropped and thresholded image", rtnImg)
             # cv2.waitKey(0)
             rtnImg = imgResize(rtnImg)
+
+            cv2.imwrite(filefolder + fileNames[0], rtnImg)
+            x, y, w, h = getOcrInfo(filefolder + fileNames[0])
+            getImg = cv2.imread(filefolder + fileNames[0])
+
+
+            crop = getImg[y:y + h, x:x + w]  # create a cropped region of the gray image
+            cv2.imwrite(filefolder + fileNames[0], crop)
+
             # cv2.imshow("Cropped and thresholded image", rtnImg)
             # cv2.waitKey(0)
 
@@ -40,13 +68,119 @@ def main():
 
             # response = client.document_text_detection(image=image)
 
-            cv2.imwrite(filefolder + fileNames[0], rtnImg)
+            # cv2.imwrite(filefolder + fileNames[0], rtnImg)
 
 
+def getOcrInfo(item):
+    ocrData = []
+    client = vision.ImageAnnotatorClient()
+
+    with io.open(item, 'rb') as image_file:
+        content = image_file.read()
+
+    image = vision.types.Image(content=content)
+
+    response = client.document_text_detection(image=image)
+    # print(response)
+    # print(response.text_annotations[0].bounding_poly.vertices[1].x)
+
+    # print(response.text_annotations[0])
+    x = response.text_annotations[0].bounding_poly.vertices[0].x
+    y = response.text_annotations[0].bounding_poly.vertices[0].y
+    w = response.text_annotations[0].bounding_poly.vertices[1].x
+    h = response.text_annotations[0].bounding_poly.vertices[2].y
+
+    if(x < 0):
+        x = 0
+
+    print(x, y, w, h)
 
 
+    # for page in response.full_text_annotation.pages:
+    #     for block in page.blocks:
+    #         # print('\nBlock confidence: {}\n'.format(block.confidence))
+    #
+    #         for paragraph in block.paragraphs:
+    #             # print('Paragraph confidence: {}'.format(paragraph.confidence))
+    #
+    #             for word in paragraph.words:
+    #                 word_text = ''.join([
+    #                     symbol.text for symbol in word.symbols
+    #                 ])
+    #
+    #                 x = word.bounding_box.vertices[0].x
+    #                 y = word.bounding_box.vertices[0].y
+    #
+    #                 width = int(word.bounding_box.vertices[1].x) - int(word.bounding_box.vertices[0].x)
+    #                 height = int(word.bounding_box.vertices[3].y) - int(word.bounding_box.vertices[0].y)
+    #
+    #                 location = str(x) + ',' + str(y) + ',' + str(width) + ',' + str(height)
+    #                 if x > 0 and y > 0:
+    #                     ocrData.append({"location": location, "text":word_text})
+    #
+    #                 # print('Word text: {}, location:{},{},{},{}'.format(word_text, x, y, width, height))
+    #                 # print('Word text: {}, location:{}'.format(word_text, word.bounding_box.vertices))
+    #
 
 
+    ocrPreProcessData = ocrData
+
+    # print('--------------------ocrPreProcessData---------------------')
+    # for data in ocrPreProcessData:
+    #    print(data)
+    return x, y, w, h
+
+
+def getRotateImage(item):
+    ocrData = []
+    client = vision.ImageAnnotatorClient()
+    item1 = cv2.imread(item)
+    success, encoded_image = cv2.imencode('.jpg', item1)
+    content = encoded_image.tobytes()
+
+    # with io.open(item, 'rb') as image_file:
+    #     content = image_file.read()
+
+    image = vision.types.Image(content=content)
+
+    response = client.document_text_detection(image=image)
+    # content = encoded_image.tobytes()
+
+    mydegrees = getAngleFromGoogle(response)
+    image = cv2.imread(item)
+
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+
+    M = cv2.getRotationMatrix2D(center, mydegrees, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h),
+                             flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    # cv2.imshow("Cropped and thresholded image", cv2.resize(rotated, None, fx=0.25, fy=0.25))
+    # cv2.waitKey(0)
+    return rotated
+
+def getAngleFromGoogle(response):
+    first = []
+    last =[]
+    maxlen = 0
+    for page in response.full_text_annotation.pages:
+        for block in page.blocks:
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    if len(word.symbols) > maxlen:
+                        maxlen = len(word.symbols)
+                        first = []
+                        last = []
+                        for symbol in word.symbols:
+                            if len(first) == 0:
+                                first.append(symbol.bounding_box.vertices[0].x)
+                                first.append(symbol.bounding_box.vertices[0].y)
+                            last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
+
+    myradians = math.atan2(first[1] - last[1], first[0] - last[0])
+    mydegrees = math.degrees(myradians)
+    mydegrees = mydegrees + 180
+    return mydegrees
 
 def angle_rotation(filename):
     # 기울기 보정
