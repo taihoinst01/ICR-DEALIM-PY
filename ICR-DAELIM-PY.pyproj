@@ -31,6 +31,7 @@
     <Content Include=".gitignore" />
     <Content Include="companyInfo.txt" />
     <Content Include="docSentence.txt" />
+    <Content Include="docTopType.txt" />
     <Content Include="nohup.out" />
     <Content Include="requirements.txt" />
     <Content Include="splitLabel.txt" />

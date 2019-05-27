@@ -303,11 +303,16 @@ def pyOcr_google(item, convertFilename):
     # entry 추출
     # entryData = findColByML(ocrData)
 
-    # label mapping
-    #ocrData = evaluateLabelMulti(ocrData)
+    if maxNum < 0.4 or (str(docTopType) == "51" and str(docType) == "299"):
+        # label mapping
+        ocrData = evaluateLabelMulti(ocrData)
+        
+        docTopType = findDocTopType(ocrData)
+        if docTopType == "51":
+            docType = "299"
 
-    # entry mapping
-    #ocrData = evaluateEntry(ocrData)
+        # entry mapping
+        ocrData = evaluateEntry(ocrData)
 
     # findLabel CNN
     # ocrData = labelEval.startEval(ocrData)
@@ -373,7 +378,6 @@ def getOcrInfo(item):
                         if symbol.confidence > 0.35:
                             word_text += symbol.text
                     word_text = word_text.replace('"','')
-
                     x = word.bounding_box.vertices[0].x
                     y = word.bounding_box.vertices[0].y
 
@@ -621,9 +625,11 @@ def regMatch(reg, text):
 
 def evaluateEntry(ocrData):
     try:
-
+        colNum = [765,766]
         labelDatas = []
         ocrDataX = sortArrLocationX(ocrData)
+        entryDiffHeight = 200
+
         trainData = '/home/daerimicr/icrRest/labelTrain/data/invoice.train'
         f = open(trainData, 'r', encoding='utf-8')
         lines = f.readlines()
@@ -642,6 +648,9 @@ def evaluateEntry(ocrData):
                 for labelData in labelDatas:
                     if colData['colLbl'] == labelData[1]:
                         entryCheck = labelData[2]
+                        regexCheck = labelData[3]
+
+                p = re.compile(regexCheck)
 
                 if entryCheck == 'single':
                     singleExit = False
@@ -651,47 +660,105 @@ def evaluateEntry(ocrData):
                         entryLoc = entryData['location'].split(',')
 
                         # 수평 check and colLbl 보다 오른쪽 check
-                        if locationCheck(colLoc[1], entryLoc[1], 20, -20) and locationCheck(colLoc[0], entryLoc[0], 10, -1000):
+                        if locationCheck(colLoc[1], entryLoc[1], 35, -50) and locationCheck(colLoc[0], entryLoc[0], 10, -1500) and p.match(entryData['text']):
                             if 'entryLbl' not in entryData and 'colLbl' not in entryData:
                                 entryData['entryLbl'] = colData['colLbl']
+                                entryData['amount'] = 'single'
                                 singleExit = True
                                 break
 
                     if singleExit == True:
                         continue
 
-                    for entryData in ocrDataX:
-                        entryLoc = entryData['location'].split(',')
-
-                        # 수직 check and colLbl 보다 아래 check
-                        if verticalCheck(colLoc, entryLoc, 50, -50) and locationCheck(colLoc[1], entryLoc[1], 15, -400):
-                            if 'entryLbl' not in entryData and 'colLbl' not in entryData:
-                                entryData['entryLbl'] = colData['colLbl']
-                                break
-
-                elif entryCheck == 'multi':
                     for entryData in ocrData:
                         entryLoc = entryData['location'].split(',')
 
-                        if verticalCheck(colLoc, entryLoc, 20, -20) and locationCheck(colLoc[1], entryLoc[1], 15, -2000):
+                        # 수직 check and colLbl 보다 아래 check
+                        if verticalCheck(colLoc, entryLoc, 50, -100) and locationCheck(colLoc[1], entryLoc[1], 15, -250) and int(colData['colLbl']) not in colNum and p.match(entryData['text']):
                             if 'entryLbl' not in entryData and 'colLbl' not in entryData:
                                 entryData['entryLbl'] = colData['colLbl']
+                                entryData['amount'] = 'single'
+                                break
+
+                elif entryCheck == 'multi':
+                    firstEntry = colData;
+                    preEntry = colData
+
+                    # vertical area check
+                    plus, minus = verticalAreaSearch(colData, ocrData)
+
+                    for entryData in ocrData:
+                        entryLoc = entryData['location'].split(',')
+
+                        if verticalCheck(colLoc, entryLoc, plus, minus) and locationCheck(colLoc[1], entryLoc[1], 15, -2000) and entryHeightCheck(preEntry, entryData, entryDiffHeight) and p.match(entryData['text']):
+                            if 'entryLbl' not in entryData and 'colLbl' not in entryData:
+                                entryData['entryLbl'] = colData['colLbl']
+                                entryData['amount'] = 'multi'
+                                preEntry = entryData
 
 
         return ocrData
     except Exception as e:
         print(e)
 
+def entryHeightCheck(data1, data2, diffHeight):
+    check = False
+    data1 = data1['location'].split(',')
+    data2 = data2['location'].split(',')
+    res = int(data2[1]) - int(data1[1])
+
+    if (res < diffHeight):
+        check = True
+
+    return check
+
+def verticalAreaSearch(labelData, ocrData):
+    try:
+        labelLoc = labelData['location'].split(',')
+        colList = []
+        for data in ocrData:
+            dataLoc = data['location'].split(',')
+            if locationCheck(labelLoc[1], dataLoc[1], 18, -18):
+                colList.append(data)
+
+        minusTemp = -5000
+        plusTemp = 5000
+        for col in colList:
+            colLoc = col['location'].split(',')
+            res = int(labelLoc[0]) - int(colLoc[0])
+
+            if int(labelLoc[0]) < int(colLoc[0]) and res > minusTemp:
+                minusTemp = res
+
+            if int(labelLoc[0]) > int(colLoc[0]) and res < plusTemp:
+                plusTemp = res
+
+        if (labelData['text'] == '규격'):
+            print(minusTemp, ',', plusTemp)
+
+        plus = plusTemp - (plusTemp / 2)
+
+        if minusTemp == -5000:
+            minus = -100
+        else:
+            minus = minusTemp - (minusTemp / 3)
+
+        print(minus, ",", plus)
+        return plus, minus
+    except Exception as e:
+        print(e)
 
 def evaluateLabelMulti(ocrData):
     try:
         labelDatas = []
         delDatas = []
+        # ocrData = json.loads('[{"location": "1289,1409,195,38", "text": "슬럼프또는"},{"location": "382,1410,336,54", "text": "콘크리트의종류에"},{"location": "718,1410,168,54", "text": "굵은골재"},{"location": "886,1410,126,54", "text": "의최대"},{"location": "1075,1410,148,39", "text": "호칭강도"},{"location": "1617,1426,231,39", "text": "시멘트 종류에"},{"location": "1289,1455,194,38", "text": "슬럼프 플로"},{"location": "740,1457,280,38", "text": "치수에따른구분"},{"location": "1649,1489,170,38", "text": "따른 구분"},{"location": "440,1493,191,38", "text": "따른 구분"}]')
         ocrDataX = sortArrLocationX(ocrData)
+
         trainData = '/home/daerimicr/icrRest/labelTrain/data/invoice.train'
         f = open(trainData, 'r', encoding='utf-8')
         lines = f.readlines()
-
+        
         # for item in ocrData:
         #     print(item)
 
@@ -715,9 +782,14 @@ def evaluateLabelMulti(ocrData):
                         # 완전일치 확인
                         if labelData[0].lower() == tempStr.lower():
                             data['colLbl'] = labelData[1]
+                            textWidth = 0
 
                             for insertData in insertDatas:
                                 data['text'] += ' ' + insertData['text']
+                                insertDataLoc = insertData['location'].split(',')
+                                textWidth = textWidth + int(insertDataLoc[2])
+
+                            data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(int(dataLoc[2]) + textWidth) + "," + dataLoc[3]
 
                             for delete in deletes:
                                 delDatas.append(delete)
@@ -740,39 +812,50 @@ def evaluateLabelMulti(ocrData):
         for data in ocrData:
             text = data['text'].replace(' ', '')
             dataLoc = data['location'].split(',')
-
+            check = False
+            #print('00000000', data, '0000000')
             for labelData in labelDatas:
                 insertDatas = []
-                deletes = []
+                if labelData[0].lower().find(text.lower()) == 0:
+                    for bottomData in ocrData:
+                        bottomLoc = bottomData['location'].split(',')
+
+                        if locationCheck(dataLoc[1], bottomLoc[1], 20, -20) and locationCheck(dataLoc[0], bottomLoc[0],10, -300) and data['text'] != bottomData['text']:
+                            insertDatas.append(bottomData)
+
+                        if verticalCheck(dataLoc, bottomLoc, 90, -200) and locationCheck(dataLoc[1], bottomLoc[1], 0, -150):
+                            insertDatas.append(bottomData)
+
                 tempStr = text
-                # 아래쪽 일치 확인
-                for i in range(4):
-                    if labelData[0].lower().find(tempStr.lower()) == 0:
-                        # 완전일치 확인
+
+                for i in range(10):
+                    #print(i, ',', labelData[0])
+                    textWidth = 0
+                    for insertData in insertDatas:
+                        str = tempStr + insertData['text'].replace(' ', '')
+                        if labelData[0].lower().find(str.lower()) == 0:
+                            tempStr = tempStr + insertData['text'].replace(' ', '')
+                            # textWidth 추가
+                            insertLoc = insertData['location'].split(',')
+                            if int(dataLoc[1]) - int(insertLoc[1]) > -40:
+                                textWidth += int(insertLoc[2])
+                            delDatas.append(insertData)
+
+                        #print(insertData['text'], ',', str)
+
                         if labelData[0].lower() == tempStr.lower():
                             data['colLbl'] = labelData[1]
-
-                            for insertData in insertDatas:
-                                data['text'] += ' ' + insertData['text']
-
-                            for delete in deletes:
-                                delDatas.append(delete)
-
+                            data['text'] = tempStr
+                            data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(int(dataLoc[2]) + textWidth) + "," + dataLoc[3]
+                            check = True
                             break
-                        else:
-                            # 아래 문장 합쳐서 tempStr에 저장
-                            for bottomData in ocrData:
-                                bottomLoc = bottomData['location'].split(',')
 
-                                # 수직 check and 아래 문장 check
-                                if verticalCheck(dataLoc, bottomLoc, 30, -50) and locationCheck(dataLoc[1], bottomLoc[1], 0, -120):
-                                    tempStr += bottomData['text'].replace(' ', '')
-                                    deletes.append(bottomData)
-                                    insertDatas.append(bottomData)
-                    else:
+                    if check == True:
                         break
 
-
+                if check == True:
+                    check = False
+                    break
 
         delDatas = uniq(delDatas)
         for delData in delDatas:
@@ -781,6 +864,7 @@ def evaluateLabelMulti(ocrData):
         return ocrData
     except Exception as e:
         print(e)
+
 
 def uniq(ocrData):
     result = []
@@ -977,6 +1061,42 @@ def makeindex(location):
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
+def findDocTopType(ocrData):
+    try:
+        file = open('docTopType.txt', 'r', encoding="UTF8")
+        docList = []
+        res = 0
+
+        for line in file:
+            label, docTopType = line.strip().split("||")
+            dic = {}
+            dic['label'] = label
+            dic['docTopType'] = docTopType
+            dic['count'] = 0
+            docList.append(dic)
+        file.close()
+
+        temp = 0
+
+        for doc in docList:
+            labelLists = doc['label'].split(',')
+
+            for data in ocrData:
+                for labelList in labelLists:
+                    if 'colLbl' in data and labelList == data['colLbl']:
+                        doc['count'] = 1 + doc['count']
+
+
+            rate = doc['count'] / len(doc['label'])
+
+            if temp < rate:
+                temp = rate
+                res = doc['docTopType']
+
+        return res
+
+    except Exception as ex:
+        raise Exception(str({'code': 500, 'message': 'findDocTopType error', 'error': str(ex).replace("'", "").replace('"', '')}))
 
 def findDocType(ocrData):
     try:
