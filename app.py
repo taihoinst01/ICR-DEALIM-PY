@@ -5,6 +5,7 @@ import base64
 from datetime import datetime
 from datetime import timedelta
 import cv2
+import cv2 as cv
 import json
 import operator
 import re
@@ -17,7 +18,9 @@ from pdf2image import convert_from_path, convert_from_bytes
 import ftplib
 from PIL import Image
 import io
+import hgtk
 from google.cloud import vision
+import numpy
 
 import linedel as lineDel
 # mask 생성 후 GRID 제거
@@ -36,6 +39,9 @@ osChdir = '/home/daerimicr/icrRest/'
 #pyFilePath = '/Users/Taiho/Desktop/icrRest/uploads/' # python 서버 파일 경로
 #osChdir = '/Users/Taiho/Desktop/icrRest/'
 # encode
+
+regex = r'[가-힣]+'
+
 def stringToBase64(s):
     return base64.b64encode(s.encode('utf-8'))
 
@@ -145,9 +151,29 @@ def upload_file_google():
                 # x, y, w, h = lineDect.main(stringToBase64(upload_path + "chg_" + item))
                 # lineDeleteAndNoiseDelete
                 # lineDel.main(stringToBase64(upload_path + "chg_" + item))
-                lineDect.main(stringToBase64(upload_path + item))
-                imgResize(upload_path + item)
-                obj = pyOcr_google(upload_path + item, convertFilename)
+                # lineDect.main(stringToBase64(upload_path + item))
+                # imgResize(upload_path + item)
+                # obj = pyOcr_google(upload_path + item, convertFilename)
+
+                rotatedImg = getRotateImage(upload_path + item)
+                retOcr = getOcrLabels(rotatedImg)
+
+                docTopType, docType, maxNum = findDocType(retOcr)
+
+                if docTopType != 58:
+                    retOcr = textPreprocessGeneral(retOcr, rotatedImg)
+
+                retOcr, retImg = updLocation(retOcr, rotatedImg, docTopType)
+                retOcr = companyInfoInsert(retOcr, docTopType, docType)
+
+                obj = {}
+                obj["convertFileName"] = item[item.rfind("/") + 1:]
+                obj["originFileName"] = convertFilename
+                obj["docCategory"] = {"DOCTYPE": docType, "DOCTOPTYPE": docTopType, "DOCSCORE": maxNum}
+                obj["data"] = retOcr
+
+                cv.imwrite(upload_path + item, retImg)
+
                 retResult.append(obj)
         else:
             fileNames = imgResize(upload_path + convertFilename)
@@ -225,6 +251,669 @@ def insertSplitData():
 #         raise Exception(str({'code': 500, 'message': 'lineDelete error',
 #                              'error': str(ex).replace("'", "").replace('"', '')}))
 
+def textPreprocessGeneral(retocr, img):
+    idx = 0
+    labeldics = {}
+    regexp = "[-=+,#/\?:^$.@*\"※~&%ㆍ!』\\‘|\(\)\[\]\<\>`\'…》]"
+    file = open("generalLabel.txt", "r", encoding="UTF-8-sig")
+    for line in file:
+        if line is None:
+            print("generalLabel line is Null")
+        else:
+            labelNo, labelWord, fieldDirection = line.strip().split("||")
+            labeldics[labelWord] = [labelNo, fieldDirection]
+    file.close()
+
+    #'I' 문장 제거
+    while idx < len(retocr):
+        if retocr[idx]["text"] == '' or retocr[idx]["text"] == '|':
+            del retocr[idx]
+            idx -= 1
+        if retocr[idx]["text"].find('|') > -1:
+            print()
+        idx += 1
+
+    idx = 0
+
+    #같은라인 문장 합치기 레이블 문장 합치기
+    while idx < len(retocr):
+        isCombiend, combineData = distanceParams(retocr[idx], mostCloseWordSameLine(retocr[idx],extractSameLine(retocr[idx],retocr, 13)))
+        if combineData:
+            # 같은 라인에 거리가 문장높이의 절반 이하일 경우 text는 합친다
+            if isCombiend < int(retocr[idx]["location"].split(",")[3]) / 2:
+                retocr[idx] = combiendText(retocr[idx], combineData)
+                retocr.remove(combineData)
+                idx -= 1
+            elif combiendLabelText(retocr[idx]["text"], combineData["text"], list(labeldics.keys())):
+                # 같은 줄에 다음 text와 합쳐서 레이블의 부분일 경우 합친다
+                retocr[idx] = combiendText(retocr[idx], combineData)
+                retocr.remove(combineData)
+                idx -= 1
+        idx += 1
+
+    labellist = {}
+    for item in retocr:
+        for tempdict in labeldics.keys():
+            ratio = similar(re.sub(regexp, '', item["text"].lower()), tempdict.lower())
+            if ratio > 0.8:
+                if item['location'] in labellist:
+                    if  labellist[item['location']][0] < ratio:
+                        labellist[item['location']] = [ratio, labeldics[tempdict]]
+                else:
+                    labellist[item['location']] = [ratio, labeldics[tempdict]]
+    retocr = findSingleField('General', retocr, labellist)
+    retocr = findMultiField(retocr, labellist, img)
+
+    return retocr
+
+#싱글필드 추출
+def findSingleField(toptype, retocr, labellist):
+    fixfilename = ''
+    if toptype == 'Rebar':
+        fixfilename = 'rebarFixLabel.txt'
+    elif toptype == 'General':
+        fixfilename = 'generalFixLabel.txt'
+    fixList = {}
+
+    file = open(fixfilename, "r", encoding="UTF-8-sig")
+    for line in file:
+        if line is None:
+            print("FixLabel line is Null")
+        else:
+            labelno, text = line.strip().split("||")
+            if labelno in fixList:
+                fixList[labelno].append(text)
+            else:
+                fixList[labelno] = [text]
+    file.close()
+
+    #similarity 검색
+    resultDic = {}
+    for serialno in fixList:
+        maxRatio = 0
+        for textlist in fixList[serialno]:
+            for item in retocr:
+                ratio = similar(makeParts(textlist), makeParts(item["text"]))
+                if ratio > 0.7 and ratio > maxRatio:
+                    maxRatio = ratio
+                    resultDic[serialno] = item["text"]
+                    print(serialno,'\t',item["text"],'\t',maxRatio)
+
+    resultLists = resultDic.items()
+
+    for item in retocr:
+        for resultList in resultLists:
+            if item['text'] == resultList[1]:
+                item['entryLbl'] = resultList[0]
+
+    return retocr
+
+def findMultiField(retocr, labellist, img):
+    #같은 라인에 있는 레이블끼리 집합생성
+    sameLineLabel = []
+    for key, value in labellist.items():
+        if value[1][1] == 'M':
+            location = list(map(int, key.split(",")))
+            if len(sameLineLabel) == 0:
+                sameLineLabel.append([[location, value[1][0]]])
+            else:
+                #기존 레이블과 동일 라인일 경우
+                addFlag = False
+                for lines in range(len(sameLineLabel)):
+                    for line in range(len(sameLineLabel[lines])):
+                        if not addFlag and abs(sameLineLabel[lines][line][0][1] - location[1]) < 16:
+                            sameLineLabel[lines].append([location, value[1][0]])
+                            addFlag = True
+                if not addFlag:
+                    sameLineLabel.append([[location, value[1][0]]])
+
+    for x in range(len(sameLineLabel)):
+        if len(sameLineLabel[x]) > 1:
+            for y in range(len(sameLineLabel[x])):
+                coords = sameLineLabel[x][y][0]
+                labelno = sameLineLabel[x][y][1]
+                startx, endx = getSideLine(img, coords)
+                # startx, endx 사이에 있으면서 coords[1] + coords[3] 아래에 있는 문장을 labelno로 매핑
+                retocr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
+    return retocr
+
+#영역내 멀티 필드 추출
+def rangedFiled(retocr, startx, endx, endy, labelno):
+    print(labelno, 'start label ', startx, 'end label ', endx)
+    blanklimit = 300
+    cursor = endy
+    extractFields = []
+    idx = 0
+    while idx < len(retocr):
+        splitLoc = list(map(int, retocr[idx]["location"].split(',')))
+        targetCenter = (splitLoc[0] * 2 + splitLoc[2]) / 2
+        if startx < targetCenter and endx > targetCenter:
+            if endy < splitLoc[1] + splitLoc[3]:
+                extractFields.append(retocr[idx])
+        idx += 1
+    # 추출된 엔트리들중 같은 라인에 있는 문장 합치기
+    idx = 0
+    for idx in range(len(extractFields)):
+        nowy = list(map(int, extractFields[idx]["location"].split(",")))[1]
+        #리미트 안에 있는지
+        if cursor + blanklimit > nowy:
+            # 다음게 있는지
+            if idx + 1 < len(extractFields):
+                nexty = list(map(int, extractFields[idx + 1]["location"].split(",")))[1]
+                # 다음게 같은 라인인지
+                if abs(nowy - nexty) < 13:
+                    retocr[retocr.index(extractFields[idx])] = combiendText(extractFields[idx], extractFields[idx + 1])
+                    retocr.remove(extractFields[idx + 1])
+                    extractFields[idx+1] = combiendText(extractFields[idx], extractFields[idx + 1])
+                # 다음게 다른 라인
+                else:
+                    cursor = nowy
+                    # print(labelno, '===', extractFields[idx])
+                    retocr = matchEntry(retocr, extractFields[idx], labelno)
+            # 다음게 없을때
+            else:
+                cursor = nowy
+                # print(labelno, '===', extractFields[idx])
+                retocr = matchEntry(retocr, extractFields[idx], labelno)
+        #리미트 밖
+        else:
+            break
+    return retocr
+
+def matchEntry(ocrData, extractFields, labelno):
+    for item in ocrData:
+        if item['location'] == extractFields['location']:
+            item['entryLbl'] = labelno
+    return ocrData
+
+def makeParts(word):
+    retStr = ''
+    for char in word:
+        if hgtk.checker.is_hangul(char):
+            retStr += ''.join(hgtk.letter.decompose(char))
+        else:
+            retStr += char
+    return retStr
+
+def getSideLine(img, coords):
+    item = cv.bitwise_not(img)
+    #ret, item = cv.threshold(item, 87, 255, cv.THRESH_BINARY)
+    verticalsize = 40
+    deleteVerticalLineWeight = 9
+    verticalStructure = cv.getStructuringElement(cv.MORPH_RECT, (1, int(verticalsize)))
+    verticalDilateStructure = cv.getStructuringElement(cv.MORPH_RECT, (deleteVerticalLineWeight, int(verticalsize)))
+
+    item = cv.erode(item, verticalStructure)
+    item = cv.dilate(item, verticalDilateStructure)
+
+    edges = cv.Canny(item, 50, 200, apertureSize=3)
+    minLineLength = 3500
+    maxLineGap = 80
+    findLimit = 1500
+
+    height, width = img.shape[:2]
+    # 레이블의 y좌표
+    label_coord_y = coords[1] + coords[3] / 2
+    # 레이블의 X좌표
+    label_coord_x = coords[0] + coords[2] / 2
+    # 문서 X축 시작시점
+    label_start_x = 0
+    # 문서 X축 종료시점
+    label_end_x = width
+    lines = cv.HoughLinesP(edges, 1, numpy.pi / 360, 100, minLineLength, maxLineGap)
+    for i in range(len(lines)):
+        for x1, y1, x2, y2 in lines[i]:
+            #cv.line(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            if y1 > label_coord_y and y1 < label_coord_y + findLimit:
+
+                myradians = math.atan2(y1 - y2, x1 - x2)
+                mydegrees = math.degrees(myradians)
+                mydegrees = mydegrees + 180
+                if mydegrees > 260.0 and mydegrees < 280.0:
+                    # cv.line(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                    if label_coord_x > x1 and label_start_x < x1:
+                        label_start_x = x1
+                    if label_coord_x < x1 and label_end_x > x1:
+                        label_end_x = x1
+
+    # cv.imshow('img1', cv.resize(img, None, fx=0.15, fy=0.15))
+    # cv.waitKey(0)
+    # cv.destroyAllWindows()
+    return label_start_x, label_end_x
+
+def getOcrLabels(inputimg):
+    try:
+        ocrData = []
+        client = vision.ImageAnnotatorClient()
+        # item1 = cv.imread(item)
+        success, encoded_image = cv.imencode('.jpg', inputimg)
+        content = encoded_image.tobytes()
+        image = vision.types.Image(content=content)
+
+        response = client.document_text_detection(image=image)
+
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                # print('\nBlock confidence: {}\n'.format(block.confidence))
+
+                for paragraph in block.paragraphs:
+                    # print('Paragraph confidence: {}'.format(paragraph.confidence))
+
+                    for word in paragraph.words:
+                        word_text = ''
+                        for symbol in word.symbols:
+                            if symbol.confidence > 0.25:
+                                word_text += symbol.text
+                        word_text = word_text.replace('"','')
+                        x = word.bounding_box.vertices[0].x
+                        y = word.bounding_box.vertices[0].y
+
+                        width = int(word.bounding_box.vertices[1].x) - int(word.bounding_box.vertices[0].x)
+                        height = int(word.bounding_box.vertices[3].y) - int(word.bounding_box.vertices[0].y)
+
+                        location = str(x) + ',' + str(y) + ',' + str(width) + ',' + str(height)
+                        if x > 0 and y > 0 and word_text != "":
+                            ocrData.append({"location": location, "text":word_text})
+
+        ocrData = sortLocX(sortLocY(ocrData))
+        return ocrData
+    except Exception as e:
+        print(e)
+
+def updLocation(ocrData, img, docTopType):
+    try:
+        regX = r'[가-힣]+'
+
+        minX = 100000
+        maxX = 0
+        minXText = ''
+        maxXText = ''
+        minY = 100000
+        maxY = 0
+        minYText = ''
+        maxYText = ''
+
+        height, width = img.shape[:2]
+
+        garbage = ['공미', '엘씨엘폼']
+
+        for data in ocrData:
+            location = data['location']
+            location = location.split(",")
+
+            if re.findall(regX, data['text']) and data['text'] not in garbage:
+                if docTopType == 58:
+                    if minX > int(location[0]) and int(location[0]) > 160:
+                        minX = int(location[0])
+                        minXText = data['text']
+                    if maxX < int(location[0]) + int(location[2]) and int(location[0]) + int(location[2]) < width - 160:
+                        maxX = int(location[0]) + int(location[2])
+                        maxXText = data['text']
+                    if minY > int(location[1]):
+                        minY = int(location[1])
+                        minYText = data['text']
+                    if maxY < int(location[1]) + int(location[3]):
+                        maxY = int(location[1]) + int(location[3])
+                        maxYText = data['text']
+                else:
+                    if minX > int(location[0]):
+                        minX = int(location[0])
+                        minXText = data['text']
+                    if maxX < int(location[0]) + int(location[2]):
+                        maxX = int(location[0]) + int(location[2])
+                        maxXText = data['text']
+                    if minY > int(location[1]):
+                        minY = int(location[1])
+                        minYText = data['text']
+                    if maxY < int(location[1]) + int(location[3]):
+                        maxY = int(location[1]) + int(location[3])
+                        maxYText = data['text']
+
+        print("minX : ", minX, ", minXText : ", minXText, ", maxX : ", maxX, ", maxXText : ", maxXText)
+        print("minY : ", minY, ", minYText : ", minYText, ", maxY : ", maxY, ", maxYText : ", maxYText)
+        margin = 100
+
+        #doctype 58일 경우 minX maxX 를 이미지선에서 추출
+
+        # if docTopType == 58:
+        #     img = getCropedImg(img, minY, maxY)
+        # else:
+        y = minY - margin
+        if y < 0:
+            y = 0
+        x = minX - margin
+        if x < 0:
+            x = 0
+
+        img = img[y:maxY+margin, x:maxX+margin]
+
+        img = imgResize(img)
+
+        for data in ocrData:
+            updLocation = data['location']
+            updLocation = relocate(updLocation, minX, minY, maxX, maxY)
+            data['location'] = updLocation
+
+        #     cv.line(img, (int(updLocation.split(',')[0]), int(updLocation.split(',')[1])), (int(updLocation.split(',')[0]) + int(updLocation.split(',')[2]), int(updLocation.split(',')[1])+int(updLocation.split(',')[3])), (0, 0, 255), 3)
+        #
+        # cv.imshow('img1', cv.resize(img, None, fx=0.25, fy=0.25))
+        # cv.waitKey(0)
+        # cv.destroyAllWindows()
+        return ocrData, img
+    except Exception as e:
+        print(e)
+
+def relocate(location, minX, minY, maxX, maxY):
+    margin = 100
+    targetwidth = 2100 - (margin * 2)
+    targetheight = 2970 - (margin * 2)
+
+    location = list(map(int, location.split(",")))
+    location[0] = round((location[0] - minX) / (maxX - minX) * targetwidth + margin)
+    location[2] = round((location[2]) / (maxX - minX) * targetwidth)
+    location[1] = round((location[1] - minY) / (maxY - minY) * targetheight + margin)
+    location[3] = round((location[3]) / (maxY - minY) * targetheight)
+
+    location = ','.join(map(str, location))
+    return location
+
+
+def getAngleFromGoogle(response):
+    try:
+        first = []
+        last = []
+        maxlen = 0
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                for paragraph in block.paragraphs:
+                    for word in paragraph.words:
+                        if len(word.symbols) > maxlen:
+                            maxlen = len(word.symbols)
+                            first = []
+                            last = []
+                            for symbol in word.symbols:
+                                if len(first) == 0:
+                                    first.append(symbol.bounding_box.vertices[0].x)
+                                    first.append(symbol.bounding_box.vertices[0].y)
+                                last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
+
+        myradians = math.atan2(first[1] - last[1], first[0] - last[0])
+        mydegrees = math.degrees(myradians)
+        mydegrees = mydegrees + 180
+
+        # 상위 5개 angle search start
+        list = []
+        temp = ''
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                for paragraph in block.paragraphs:
+                    for word in paragraph.words:
+                        list.append({"length": len(word.symbols), "word": word})
+        data = sorted(list, key=lambda l: (l['length']), reverse=True)
+        retDegrees = []
+
+        i = 0
+        while i < 10:
+            # print(data[i]['word'])
+            first = []
+            last = []
+            if data[i]['word'].bounding_box.vertices[0].x > 100 and data[i]['word'].bounding_box.vertices[0].y > 100:
+                for symbol in data[i]['word'].symbols:
+                    if len(first) == 0:
+                        first.append(symbol.bounding_box.vertices[0].x)
+                        first.append(symbol.bounding_box.vertices[0].y)
+                    last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
+
+                radians = math.atan2(first[1] - last[1], first[0] - last[0])
+                degrees = math.degrees(radians)
+                retDegrees.append(degrees)
+                i += 1
+            else:
+                del data[i]
+        # 상위 5개 angle search end
+        mydegrees = avgDegrees(retDegrees)
+        mydegrees = mydegrees + 180
+        return mydegrees
+    except Exception as e:
+        print(e)
+
+def avgDegrees(arr):
+    for i in range(7):
+        ave = numpy.mean(arr)
+        arr2 = abs(arr - ave)
+        index, value = max(enumerate(arr2), key=operator.itemgetter(1))
+        del arr[index]
+    return arr[0]
+
+def getRotateImage(imgPre):
+    try:
+        item = cv.imread(imgPre)
+        client = vision.ImageAnnotatorClient()
+        success, encoded_image = cv.imencode('.jpg', item)
+        content = encoded_image.tobytes()
+
+        image = vision.types.Image(content=content)
+
+        response = client.document_text_detection(image=image)
+        # content = encoded_image.tobytes()
+
+        mydegrees = getAngleFromGoogle(response)
+        print(mydegrees)
+        # image = cv.imread(item)
+
+        (h, w) = item.shape[:2]
+        center = (w // 2, h // 2)
+
+        M = cv.getRotationMatrix2D(center, mydegrees, 0.5)
+
+        newX, newY = w * 0.5, h * 0.5
+        r = numpy.deg2rad(mydegrees)
+        newX, newY = (
+            abs(numpy.sin(r) * newY) + abs(numpy.cos(r) * newX), abs(numpy.sin(r) * newX) + abs(numpy.cos(r) * newY))
+
+        (tx, ty) = ((newX - w) / 2, (newY - h) / 2)
+        M[0, 2] += tx  # third column of matrix holds translation, which takes effect after rotation.
+        M[1, 2] += ty
+        thresh1 = cv.warpAffine(item, M, (int(newX), int(newY)),
+                                flags=cv.INTER_CUBIC, borderMode=cv.BORDER_REPLICATE)
+        thresh1 = cv.bitwise_not(thresh1)
+        verticalsize = 20
+        deleteVerticalLineWeight = 2
+        verticalStructure = cv.getStructuringElement(cv.MORPH_RECT, (1, int(verticalsize)))
+        verticalDilateStructure = cv.getStructuringElement(cv.MORPH_RECT, (deleteVerticalLineWeight, int(verticalsize)))
+
+        thresh1 = cv.erode(thresh1, verticalStructure)
+        thresh1 = cv.dilate(thresh1, verticalDilateStructure)
+
+        edges = cv.Canny(thresh1, 50, 200, apertureSize=3)
+        minLineLength = 3500
+        maxLineGap = 50
+
+        longestlength = 0
+        longlineDegree = -90
+        lines = cv.HoughLinesP(edges, 1, numpy.pi / 360, 100, minLineLength, maxLineGap)
+        for i in range(len(lines)):
+            for x1, y1, x2, y2 in lines[i]:
+                myradians = math.atan2(y1 - y2, x1 - x2)
+                tempmydegrees = math.degrees(myradians)
+                # print(tempmydegrees)
+                # print('x1: ' + repr(x1) + 'y1: ' + repr(y1) + 'x2: ' + repr(x2) + 'y2: ' + repr(y2))
+                if tempmydegrees < -85.0 and tempmydegrees > -95.0:
+                    cv.line(thresh1, (x1, y1), (x2, y2), (0, 0, 255), 4)
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    if math.sqrt((dx * dx) + (dy * dy)) > longestlength:
+                        longestlength = math.sqrt((dx * dx) + (dy * dy))
+                        longlineDegree = tempmydegrees
+        # cv.imshow('img1', cv.resize(thresh1, None, fx=0.15, fy=0.15))
+        # cv.waitKey(0)
+        # cv.destroyAllWindows()
+        M = cv.getRotationMatrix2D(center, mydegrees + longlineDegree + 90, 1)
+
+        newX, newY = w, h
+        r = numpy.deg2rad(mydegrees + longlineDegree + 90)
+        newX, newY = (
+            abs(numpy.sin(r) * newY) + abs(numpy.cos(r) * newX), abs(numpy.sin(r) * newX) + abs(numpy.cos(r) * newY))
+
+        (tx, ty) = ((newX - w) / 2, (newY - h) / 2)
+        M[0, 2] += tx  # third column of matrix holds translation, which takes effect after rotation.
+        M[1, 2] += ty
+        rotated = cv.warpAffine(item, M, (int(newX), int(newY)),
+                                flags=cv.INTER_CUBIC, borderMode=cv.BORDER_REPLICATE)
+        # cv.imshow('img1', cv.resize(rotated, None, fx=0.15, fy=0.15))
+        # cv.waitKey(0)
+        # cv.destroyAllWindows()
+        return rotated
+    except Exception as e:
+        print(e)
+
+
+def getGoogleOutline(item):
+    ocrData = []
+    client = vision.ImageAnnotatorClient()
+    # item1 = cv.imread(item)
+    success, encoded_image = cv.imencode('.jpg', item)
+    content = encoded_image.tobytes()
+
+    image = vision.types.Image(content=content)
+
+    response = client.document_text_detection(image=image)
+    # print(response.text_annotations[0])
+    # x = response.text_annotations[0].bounding_poly.vertices[0].x
+    # y = response.text_annotations[0].bounding_poly.vertices[0].y
+    # w = response.text_annotations[0].bounding_poly.vertices[1].x
+    # h = response.text_annotations[0].bounding_poly.vertices[2].y
+
+    minY = 10000
+    maxY = 0
+    minText = ""
+    maxText = ""
+    minBool = False
+    maxBool = False
+
+    for page in response.full_text_annotation.pages:
+        for block in page.blocks:
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    text = ""
+                    for symbol in word.symbols:
+                        text += symbol.text
+                        for vertice in symbol.bounding_box.vertices:
+                            if re.findall(regex, text) and minY > vertice.y:
+                                minY = vertice.y
+                                minBool = True
+
+                            if re.findall(regex, text) and maxY < vertice.y:
+                                maxY = vertice.y
+                                maxBool = True
+
+                    if minBool == True:
+                        minText = text
+                        minBool = False
+
+                    if maxBool == True:
+                        maxText = text
+                        maxBool = False
+
+    print("res MinY : ", minY, "minText :", minText, "res MaxY :", maxY, "maxText : ", maxText)
+
+    if minY < 0:
+        minY = 0
+
+    return minY, maxY
+
+def getCropedImg(rotatedimg):
+    try:
+        ret, thresh1 = cv.threshold(rotatedimg, 140, 255, cv.THRESH_BINARY)
+        thresh1 = cv.bitwise_not(thresh1)
+        # thresh1 = cv.adaptiveThreshold(thresh1, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 15, -2)
+        verticalsize = 20
+        deleteVerticalLineWeight = 2
+        verticalStructure = cv.getStructuringElement(cv.MORPH_RECT, (1, int(verticalsize)))
+        verticalDilateStructure = cv.getStructuringElement(cv.MORPH_RECT, (deleteVerticalLineWeight, int(verticalsize)))
+
+        thresh1 = cv.erode(thresh1, verticalStructure)
+        thresh1 = cv.dilate(thresh1, verticalDilateStructure)
+
+        # cv.imshow('img1', cv.resize(thresh1, None, fx=0.15, fy=0.15))
+        # cv.waitKey(0)
+        # cv.destroyAllWindows()
+        edges = cv.Canny(thresh1, 50, 200, apertureSize=3)
+        minLineLength = 3500
+        maxLineGap = 50
+        height, width = rotatedimg.shape[:2]
+        limitLine = 100
+        minX = width
+        maxX = 0
+        margin = 70
+
+        lines = cv.HoughLinesP(edges, 1, numpy.pi / 360, 100, minLineLength, maxLineGap)
+        for i in range(len(lines)):
+            for x1, y1, x2, y2 in lines[i]:
+                # myradians = math.atan2(y1 - y2, x1 - x2)
+                # mydegrees = math.degrees(myradians)
+                # mydegrees = mydegrees + 180
+                #
+                # if mydegrees > 260.0 and mydegrees < 280.0:
+                #     cv.line(thresh1, (x1, y1), (x2, y2), (0, 255, 255), 3)
+                #     print('x1: ' + repr(x1) + 'y1: ' + repr(y1) + 'x2: ' + repr(x2) + 'y2: ' + repr(y2))
+                #     for j in range(len(lines)):
+                #         for xx1, yy1, xx2, yy2 in lines[j]:
+                #             if x1 == xx1 and y1 + 500 > yy2 and y1 < yy2:
+                #                 cv.line(thresh1, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                #                 if margin < x1 and minX > x1:
+                #                     minX = x1
+                #                 if margin < x2 and minX > x2:
+                #                     minX = x2
+                #                 if width - margin > x1 and maxX < x1:
+                #                     maxX = x1
+                #                 if width - margin > x2 and maxX < x2:
+                #                     maxX = x2
+                # if mydegrees > 80.0 and mydegrees < 100.0:
+                #     cv.line(thresh1, (x1, y1), (x2, y2), (0, 255, 255), 3)
+                #     print('x1: ' + repr(x1) + 'y1: ' + repr(y1) + 'x2: ' + repr(x2) + 'y2: ' + repr(y2))
+                #     for j in range(len(lines)):
+                #         for xx1, yy1, xx2, yy2 in lines[j]:
+                #             if x1 == xx1 and y2 + 500 > yy1 and y2 < yy1:
+                #                 cv.line(thresh1, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                #                 if margin < x1 and minX > x1:
+                #                     minX = x1
+                #                 if margin < x2 and minX > x2:
+                #                     minX = x2
+                #                 if width - margin > x1 and maxX < x1:
+                #                     maxX = x1
+                #                 if width - margin > x2 and maxX < x2:
+                #                     maxX = x2
+                dx = x2 - x1
+                dy = y2 - y1
+                if math.sqrt((dx * dx) + (dy * dy)) > limitLine:
+                    cv.line(thresh1, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                    if margin < x1 and minX > x1:
+                        minX = x1
+                    if margin < x2 and minX > x2:
+                        minX = x2
+                    if width - margin > x1 and maxX < x1:
+                        maxX = x1
+                    if width - margin > x2 and maxX < x2:
+                        maxX = x2
+        # print('min line %d -- max line %d' % (minX, maxX))
+
+        y, h = getGoogleOutline(rotatedimg)
+        minY = y - 50
+        if minY < 0:
+            minY = 0
+
+        if abs(maxX - minX) < 1000:
+            minX = 0
+        else:
+            width = minX + (maxX - minX)
+
+        crop = rotatedimg[minY:y + h, minX:width]
+
+        return crop
+    except Exception as e:
+        print(e)
+
 def pyOcr(item, convertFilename):
     # MS ocr api 호출
     ocrData = get_Ocr_Info(item)
@@ -290,10 +979,6 @@ def pyOcr_google(item, convertFilename):
 
     # print(docTopType, docType)
 
-    # 업체명,사업자번호,주소,전화 입력 
-    ocrData = companyInfoInsert(ocrData, docTopType, docType)
-
-
     # Y축 데이터 X축 데이터 추출
     # ocrData = compareLabel(ocrData)
     # ocrData = extractCNNData(ocrData)
@@ -303,16 +988,14 @@ def pyOcr_google(item, convertFilename):
     # entry 추출
     # entryData = findColByML(ocrData)
 
-    if maxNum < 0.4 or (str(docTopType) == "51" and str(docType) == "299"):
-        # label mapping
-        ocrData = evaluateLabelMulti(ocrData)
-        
-        docTopType = findDocTopType(ocrData)
-        if docTopType == "51":
-            docType = "299"
+    # 업체명,사업자번호,주소,전화 입력
+    ocrData = companyInfoInsert(ocrData, docTopType, docType)
 
-        # entry mapping
-        ocrData = evaluateEntry(ocrData)
+    # label mapping
+    #ocrData = evaluateLabelMulti(ocrData)
+
+    # entry mapping
+    #ocrData = evaluateEntry(ocrData)
 
     # findLabel CNN
     # ocrData = labelEval.startEval(ocrData)
@@ -375,8 +1058,10 @@ def getOcrInfo(item):
                 for word in paragraph.words:
                     word_text = ''
                     for symbol in word.symbols:
-                        if symbol.confidence > 0.35:
+                        if symbol.confidence > 0.25:
                             word_text += symbol.text
+                        # else:
+                        #     print(symbol.text , "confidence : ", symbol.confidence)
                     word_text = word_text.replace('"','')
                     x = word.bounding_box.vertices[0].x
                     y = word.bounding_box.vertices[0].y
@@ -391,9 +1076,9 @@ def getOcrInfo(item):
                     # print('Word text: {}, location:{},{},{},{}'.format(word_text, x, y, width, height))
                     # print('Word text: {}, location:{}'.format(word_text, word.bounding_box.vertices))
 
-    #print('--------------------origin---------------------')
-    #for data in ocrData:
-    #    print(data)
+    # print('--------------------origin---------------------')
+    # for data in ocrData:
+    #     print(data)
 
     # y축 다음 x축 기준으로 소팅
     ocrData = sortLocX(sortLocY(ocrData))
@@ -532,66 +1217,53 @@ def distanceParams(tempdict, comparedict):
             {'code': 500, 'message': 'distanceParams fail', 'error': str(e).replace("'", "").replace('"', '')}))
 
 # 좌표 및 텍스트 합친다
-def combiendText(ocrData, combiendData, idx, originX, originY):
+def combiendText(ocrItem, combiendData):
     try:
         result = {}
-        ocrItem = ocrData[idx]
-        ocrItemLoc = ocrItem["location"].split(',')
-        combiendDataLoc = combiendData["location"].split(',')
-        location = ""
+        ocrItemLoc = list(map(int, ocrItem["location"].split(',')))
+        combiendDataLoc = list(map(int, combiendData["location"].split(',')))
+        location = []
         text = ""
 
-        if int(ocrItemLoc[0]) < int(combiendDataLoc[0]):
-            location = str(int(ocrItemLoc[0]) - int(originX)) + "," + str(int(ocrItemLoc[1]) - int(originY)) + ","
-            location += str(int(combiendDataLoc[0]) - int(ocrItemLoc[0]) + int(combiendDataLoc[2])) + ","
+        if ocrItemLoc[0] < combiendDataLoc[0]:
+            location.append(ocrItemLoc[0])
             text = ocrItem["text"] + combiendData["text"]
         else:
-            location = str(int(combiendDataLoc[0]) - int(originX)) + "," + str(int(combiendDataLoc[1]) - int(originY)) + ","
-            location += str(int(ocrItemLoc[0]) - int(combiendDataLoc[0]) + int(ocrItemLoc[2])) + ","
+            location.append(combiendDataLoc[0])
             text = combiendData["text"] + ocrItem["text"]
-        if int(ocrItemLoc[3]) < int(combiendDataLoc[3]):
-            location += combiendDataLoc[3]
+        if ocrItemLoc[1] < combiendDataLoc[1]:
+            location.append(ocrItemLoc[1])
         else:
-            location += ocrItemLoc[3]
+            location.append(combiendDataLoc[1])
 
-        ocrData[idx]["location"] = location
-        ocrData[idx]["text"] = text
+        if ocrItemLoc[0] + ocrItemLoc[2] < combiendDataLoc[0] + combiendDataLoc[2]:
+            location.append(combiendDataLoc[0] + combiendDataLoc[2] - location[0])
+        else:
+            location.append(ocrItemLoc[0] + ocrItemLoc[2] - location[0])
+        if ocrItemLoc[1] + ocrItemLoc[3] < combiendDataLoc[1] + combiendDataLoc[3]:
+            location.append(combiendDataLoc[1] + combiendDataLoc[3] - location[1])
+        else:
+            location.append(ocrItemLoc[1] + ocrItemLoc[3] - location[1])
 
-        # 합쳐진 row 제거
-        for i in range(len(ocrData)):
-            if combiendData["location"] == ocrData[i]["location"] and combiendData["text"] == ocrData[i]["text"]:
-                del ocrData[i]
-                idx -= 1
-                break
 
-        return ocrData, idx
+        result["location"] = ",".join(map(str, location))
+        result["text"] = text
+
+        return result
 
     except Exception as e:
         raise Exception(str(
             {'code': 500, 'message': 'combiendText fail', 'error': str(e).replace("'", "").replace('"', '')}))
 
 # 같은 줄에 현재 text와 다음 텍스트가 레이블 문자에 포함하면 합친다.
-def combiendLabelText(ocrData, combineData, labelTexts, idx, originX, originY):
+def combiendLabelText(ocrText, combineText, labelTexts):
     try:
-        targetLabelTexts = []
-
-        compareText = (ocrData[idx]["text"] + combineData["text"]).replace(" ", "")
+        resultFlag = False
         for i in range(len(labelTexts)):
-            if labelTexts[i].find(compareText) != -1:
-                targetLabelTexts.append(labelTexts[i])
-
-            if len(targetLabelTexts) != 0:
-                compareText = (ocrData[idx]["text"] + combineData["text"]).replace(" ", "")
-                j = 0
-                while j < len(targetLabelTexts):
-                    if targetLabelTexts[j].find(compareText) != -1:
-                        ocrData, idx = combiendText(ocrData, combineData, idx, originX, originY)
-                    else:
-                        del targetLabelTexts[j]
-                        j -= 1
-                    j += 1
-
-        return ocrData, idx
+            if ocrText + combineText in labelTexts[i]:
+                resultFlag = True
+                break
+        return resultFlag
 
     except Exception as e:
         raise Exception(str(
@@ -628,7 +1300,7 @@ def evaluateEntry(ocrData):
         colNum = [765,766]
         labelDatas = []
         ocrDataX = sortArrLocationX(ocrData)
-        entryDiffHeight = 200
+        entryDiffHeight = 130
 
         trainData = '/home/daerimicr/icrRest/labelTrain/data/invoice.train'
         f = open(trainData, 'r', encoding='utf-8')
@@ -662,7 +1334,7 @@ def evaluateEntry(ocrData):
                         # 수평 check and colLbl 보다 오른쪽 check
                         if locationCheck(colLoc[1], entryLoc[1], 35, -50) and locationCheck(colLoc[0], entryLoc[0], 10, -1500) and p.match(entryData['text']):
                             if 'entryLbl' not in entryData and 'colLbl' not in entryData:
-                                entryData['entryLbl'] = colData['colLbl']
+                                entryData['mlEntryLbl'] = colData['colLbl']
                                 entryData['amount'] = 'single'
                                 singleExit = True
                                 break
@@ -676,7 +1348,7 @@ def evaluateEntry(ocrData):
                         # 수직 check and colLbl 보다 아래 check
                         if verticalCheck(colLoc, entryLoc, 50, -100) and locationCheck(colLoc[1], entryLoc[1], 15, -250) and int(colData['colLbl']) not in colNum and p.match(entryData['text']):
                             if 'entryLbl' not in entryData and 'colLbl' not in entryData:
-                                entryData['entryLbl'] = colData['colLbl']
+                                entryData['mlEntryLbl'] = colData['colLbl']
                                 entryData['amount'] = 'single'
                                 break
 
@@ -690,9 +1362,9 @@ def evaluateEntry(ocrData):
                     for entryData in ocrData:
                         entryLoc = entryData['location'].split(',')
 
-                        if verticalCheck(colLoc, entryLoc, plus, minus) and locationCheck(colLoc[1], entryLoc[1], 15, -2000) and entryHeightCheck(preEntry, entryData, entryDiffHeight) and p.match(entryData['text']):
+                        if entryVerticalCheck(colLoc, entryLoc, plus, minus) and locationCheck(colLoc[1], entryLoc[1], 15, -2000) and entryHeightCheck(preEntry, entryData, entryDiffHeight) and p.match(entryData['text']):
                             if 'entryLbl' not in entryData and 'colLbl' not in entryData:
-                                entryData['entryLbl'] = colData['colLbl']
+                                entryData['mlEntryLbl'] = colData['colLbl']
                                 entryData['amount'] = 'multi'
                                 preEntry = entryData
 
@@ -700,6 +1372,20 @@ def evaluateEntry(ocrData):
         return ocrData
     except Exception as e:
         print(e)
+
+def entryVerticalCheck(lblLoc, entLoc, plus, minus):
+    try:
+        lblwidthLoc = (int(lblLoc[0]) + (int(lblLoc[0]) + int(lblLoc[2]))) / 2
+        entwidthLoc = (int(entLoc[0]) + (int(entLoc[0]) + int(entLoc[2]))) / 2
+
+        if int(lblLoc[0]) + minus < entwidthLoc < int(lblLoc[0]) + int(lblLoc[2]) + plus:
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        raise Exception(str({'code': 500, 'message': 'checkVerticalEntry fail',
+                             'error': str(e).replace("'", "").replace('"', '')}))
 
 def entryHeightCheck(data1, data2, diffHeight):
     check = False
@@ -725,19 +1411,16 @@ def verticalAreaSearch(labelData, ocrData):
         plusTemp = 5000
         for col in colList:
             colLoc = col['location'].split(',')
-            res = int(labelLoc[0]) - int(colLoc[0])
+            res1 = (int(colLoc[0]) + int(colLoc[2])) - int(labelLoc[0])
+            res2 = int(colLoc[0]) - (int(labelLoc[0]) + int(labelLoc[2]))
 
-            if int(labelLoc[0]) < int(colLoc[0]) and res > minusTemp:
-                minusTemp = res
+            if int(colLoc[0]) + int(colLoc[2]) < int(labelLoc[0]) and res1 > minusTemp:
+                minusTemp = res1
 
-            if int(labelLoc[0]) > int(colLoc[0]) and res < plusTemp:
-                plusTemp = res
-
-        if (labelData['text'] == '규격'):
-            print(minusTemp, ',', plusTemp)
+            if int(labelLoc[0]) + int(labelLoc[2]) < int(colLoc[0]) and res2 < plusTemp:
+                plusTemp = res2
 
         plus = plusTemp - (plusTemp / 2)
-
         if minusTemp == -5000:
             minus = -100
         else:
@@ -758,10 +1441,9 @@ def evaluateLabelMulti(ocrData):
         trainData = '/home/daerimicr/icrRest/labelTrain/data/invoice.train'
         f = open(trainData, 'r', encoding='utf-8')
         lines = f.readlines()
-        
+
         # for item in ocrData:
         #     print(item)
-
         for line in lines:
             data = line.split('||')
             data[3] = data[3][:-1]
@@ -777,19 +1459,25 @@ def evaluateLabelMulti(ocrData):
                 tempStr = text
 
                 # data에 colLbl이 없으면 오른쪽 일치 확인
-                for i in range(5):
+                for i in range(10):
                     if labelData[0].lower().find(tempStr.lower()) == 0:
                         # 완전일치 확인
-                        if labelData[0].lower() == tempStr.lower():
+                        if labelData[0].lower() == tempStr.lower() and 'colLbl' not in data:
                             data['colLbl'] = labelData[1]
                             textWidth = 0
-
+                            maxWidth = 0
+                            minWidth = 10000
                             for insertData in insertDatas:
                                 data['text'] += ' ' + insertData['text']
                                 insertDataLoc = insertData['location'].split(',')
-                                textWidth = textWidth + int(insertDataLoc[2])
 
-                            data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(int(dataLoc[2]) + textWidth) + "," + dataLoc[3]
+                                if int(insertDataLoc[0]) > maxWidth:
+                                    maxWidth = int(insertDataLoc[0])
+
+                            print(data['text'])
+                            print(maxWidth)
+                            if maxWidth != 0:
+                                data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(maxWidth - int(dataLoc[0])) + "," + dataLoc[3]
 
                             for delete in deletes:
                                 delDatas.append(delete)
@@ -801,7 +1489,10 @@ def evaluateLabelMulti(ocrData):
                                 bottomLoc = horiData['location'].split(',')
 
                                 # 수평 check
-                                if locationCheck(dataLoc[1], bottomLoc[1], 20, -20) and locationCheck(dataLoc[0], bottomLoc[0], 10, -1000) and data['text'] != horiData['text'] and horiData not in insertDatas:
+                                if locationCheck(dataLoc[1], bottomLoc[1], 20, -20) and locationCheck(dataLoc[0],
+                                                                                                      bottomLoc[0], 10,
+                                                                                                      -1000) and data[
+                                    'text'] != horiData['text'] and horiData not in insertDatas:
                                     tempStr += horiData['text'].replace(' ', '')
                                     deletes.append(horiData)
                                     insertDatas.append(horiData)
@@ -813,40 +1504,47 @@ def evaluateLabelMulti(ocrData):
             text = data['text'].replace(' ', '')
             dataLoc = data['location'].split(',')
             check = False
-            #print('00000000', data, '0000000')
+            # print('00000000', data, '0000000')
             for labelData in labelDatas:
                 insertDatas = []
                 if labelData[0].lower().find(text.lower()) == 0:
                     for bottomData in ocrData:
                         bottomLoc = bottomData['location'].split(',')
 
-                        if locationCheck(dataLoc[1], bottomLoc[1], 20, -20) and locationCheck(dataLoc[0], bottomLoc[0],10, -300) and data['text'] != bottomData['text']:
+                        if locationCheck(dataLoc[1], bottomLoc[1], 20, -20) and locationCheck(dataLoc[0], bottomLoc[0],
+                                                                                              10, -300) and data[
+                            'text'] != bottomData['text']:
                             insertDatas.append(bottomData)
 
-                        if verticalCheck(dataLoc, bottomLoc, 90, -200) and locationCheck(dataLoc[1], bottomLoc[1], 0, -150):
+                        if verticalCheck(dataLoc, bottomLoc, 90, -200) and locationCheck(dataLoc[1], bottomLoc[1], 0,
+                                                                                         -150):
                             insertDatas.append(bottomData)
 
                 tempStr = text
 
                 for i in range(10):
-                    #print(i, ',', labelData[0])
+                    # print(i, ',', labelData[0])
                     textWidth = 0
+                    maxWidth = 0
+
                     for insertData in insertDatas:
                         str = tempStr + insertData['text'].replace(' ', '')
                         if labelData[0].lower().find(str.lower()) == 0:
                             tempStr = tempStr + insertData['text'].replace(' ', '')
                             # textWidth 추가
                             insertLoc = insertData['location'].split(',')
-                            if int(dataLoc[1]) - int(insertLoc[1]) > -40:
-                                textWidth += int(insertLoc[2])
+                            if int(dataLoc[1]) - int(insertLoc[1]) > -40 and int(insertLoc[2]) > maxWidth:
+                                maxWidth = int(insertLoc[2])
+
                             delDatas.append(insertData)
 
-                        #print(insertData['text'], ',', str)
+                        # print(insertData['text'], ',', str)
 
-                        if labelData[0].lower() == tempStr.lower():
+                        if labelData[0].lower() == tempStr.lower() and 'colLbl' not in data:
                             data['colLbl'] = labelData[1]
                             data['text'] = tempStr
-                            data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(int(dataLoc[2]) + textWidth) + "," + dataLoc[3]
+                            if maxWidth != 0:
+                                data['location'] = dataLoc[0] + "," + dataLoc[1] + "," + repr(maxWidth - int(dataLoc[0])) + "," + dataLoc[3]
                             check = True
                             break
 
@@ -864,7 +1562,6 @@ def evaluateLabelMulti(ocrData):
         return ocrData
     except Exception as e:
         print(e)
-
 
 def uniq(ocrData):
     result = []
@@ -930,7 +1627,37 @@ def convertPdfToImage(upload_path, pdf_file):
     except Exception as e:
         print(e)
 
-def imgResize(filename):
+def imgResize(inputimg):
+    try:
+        FIX_LONG = 2970
+        FIX_SHORT = 2100
+
+        index = 0
+
+        img = inputimg
+        height, width = img.shape[:2]
+        imagetype = "hori"
+        # 배율
+        magnify = 1
+        if (height / width) > (FIX_LONG / FIX_SHORT):
+            magnify = round((FIX_LONG / height) - 0.005, 2)
+        else:
+            magnify = round((FIX_SHORT / width) - 0.005, 2)
+
+        # 확대, 축소
+        img = cv.resize(img, dsize=(0, 0), fx=magnify, fy=magnify, interpolation=cv.INTER_LINEAR)
+        height, width = img.shape[:2]
+        # 여백 생성
+        img = cv.copyMakeBorder(img, 0, FIX_LONG - height, 0, FIX_SHORT - width, cv.BORDER_CONSTANT,
+                                value=[255, 255, 255])
+
+        return img
+
+    except Exception as ex:
+        raise Exception(
+            str({'code': 500, 'message': 'imgResize error', 'error': str(ex).replace("'", "").replace('"', '')}))
+
+def imgResize_old(filename):
     try:
         # FIX_LONG = 3600
         # FIX_SHORT = 2400
@@ -1123,10 +1850,19 @@ def findDocType(ocrData):
 
         regExp = "[\{\}\[\]\/?.,;:|\)*~`!^\-_+<>@\#$%&\\\=\(\'\"]"
 
+        cnt = 0
+        
+        #for i, item in enumerate(ocrData):
+        #   if (re.sub(regExp, "", item["text"]) != ""):
+        #        text.append(re.sub(regExp, "", item["text"]))
+        #        strText = ",".join(str(x) for x in text)
+        #        if (cnt == 20):
+        #            break        
+	
         for i, item in enumerate(ocrData):
             text.append(re.sub(regExp, "", item["text"]))
             strText = ",".join(str(x) for x in text)
-            if i == 19:
+            if i == 99:
                 break
 
         strText = strText.lower()
@@ -1361,14 +2097,14 @@ def companyInfoInsert(ocrData, docTopType, docType):
                 if int(docTopType) == int(companyDocTopType):
                     if int(docType) == int(companyDocType):
                         dic = {}
-                        #print(companyName.find(search))
-                        if companyName.find(search)  == -1:
+                        # print(companyName.find(search))
+                        if companyName.find(search) == -1:
                             dic["companyName"] = companyName
-                        #print(companyRegistNo.find(search))
-                        if companyRegistNo.find(search)  == -1:
+                        # print(companyRegistNo.find(search))
+                        if companyRegistNo.find(search) == -1:
                             dic["companyRegistNo"] = companyRegistNo
                         compnayInfoList.append(dic)
-                        #print(compnayInfoList)
+                        # print(compnayInfoList)
         file.close()
 
         for rows in compnayInfoList:
@@ -1394,11 +2130,12 @@ def companyInfoInsert(ocrData, docTopType, docType):
                     obj["location"] = rows["companyName"].split("@@")[1]
                     obj["text"] = rows["companyName"].split("@@")[0]
                     ocrData.append(obj)
-        #print(ocrData) 
+        # print(ocrData)
         return ocrData
 
     except Exception as ex:
         raise Exception(str(
             {'code': 500, 'message': 'companyInfoInsert error', 'error': str(ex).replace("'", "").replace('"', '')}))
-if __name__=='__main__':
-    app.run(host='0.0.0.0',port=5000,debug=True)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
