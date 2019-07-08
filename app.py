@@ -155,13 +155,18 @@ def upload_file_google():
                 # imgResize(upload_path + item)
                 # obj = pyOcr_google(upload_path + item, convertFilename)
 
-                rotatedImg = getRotateImage(upload_path + item)
-                retOcr = getOcrLabels(rotatedImg)
-
+                rotatedImg, retOcr = getRotateImage(upload_path + item)
                 docTopType, docType, maxNum = findDocType(retOcr)
 
-                if docTopType != 58:
+                if maxNum < 0.3:
+                    if docTopType == 58:
+                        docTopType = 51
+                        docType = 339
+
+                if docTopType == 51:
                     retOcr = textPreprocessGeneral(retOcr, rotatedImg)
+                elif docTopType == 61:
+                    retOcr = textPreprocessRebar(retOcr, rotatedImg)
 
                 retOcr, retImg = updLocation(retOcr, rotatedImg, docTopType)
                 retOcr = companyInfoInsert(retOcr, docTopType, docType)
@@ -187,9 +192,9 @@ def upload_file_google():
 
         for item in fileNames:
             uploadFtpFile(upload_path, item)
-            # uploadFtpFile(upload_path, "chg_" + item)
+            uploadFtpFile(upload_path, "org_" + item)
             os.remove(upload_path + item)
-            # os.remove(upload_path + "chg_" + item)
+            os.remove(upload_path + "org_" + item)
         os.remove(upload_path + convertFilename)
 
         result = re.sub('None', "null", json.dumps(retResult, ensure_ascii=False))
@@ -266,11 +271,26 @@ def textPreprocessGeneral(retocr, img):
 
     #'I' 문장 제거
     while idx < len(retocr):
-        if retocr[idx]["text"] == '' or retocr[idx]["text"] == '|':
+        if retocr[idx]["text"] == '' or retocr[idx]["text"] == '|' or retocr[idx]["text"] == ':':
             del retocr[idx]
             idx -= 1
-        if retocr[idx]["text"].find('|') > -1:
-            print()
+        if retocr[idx]["text"].find(':') > -1:
+            words = retocr[idx]["text"].split(":")
+            if len(words[0]) > 0 and len(words[1]) > 0:
+                tempdictLoc = list(map(int, retocr[idx]["location"].split(',')))
+                firstLoc = tempdictLoc
+                firstLoc[2] = tempdictLoc[2] - tempdictLoc[3] * (len(words[0]) / len(words[1]))
+                secondLoc = tempdictLoc
+                secondLoc[0] = secondLoc[0] + firstLoc[2] + tempdictLoc[3]
+                secondLoc[2] = tempdictLoc[2] - firstLoc[2] - tempdictLoc[3]
+
+                tempdict = {}
+                tempdict["text"] = words[0]
+                tempdict["location"] = ",".join(map(str, firstLoc))
+                retocr[idx] = tempdict
+                tempdict["text"] = words[1]
+                tempdict["location"] = ",".join(map(str, secondLoc))
+                retocr.insert(idx + 1, tempdict)
         idx += 1
 
     idx = 0
@@ -302,8 +322,122 @@ def textPreprocessGeneral(retocr, img):
                 else:
                     labellist[item['location']] = [ratio, labeldics[tempdict]]
     retocr = findSingleField('General', retocr, labellist)
-    retocr = findMultiField(retocr, labellist, img)
+    retocr = findMultiField('General', retocr, labellist, img)
 
+    return retocr
+
+def textPreprocessRebar(retocr, img):
+    idx = 0
+    labeldics = {}
+    regexp = "[-=+,#/\?:^$.@*\"※~&%ㆍ!』\\‘|\(\)\[\]\<\>`\'…》]"
+    orgretocr = retocr
+    file = open("rebarLabel.txt", "r", encoding="UTF-8-sig")
+    for line in file:
+        if line is None:
+            print("rebarLabel line is Null")
+        else:
+            labelNo, labelWord, fieldDirection = line.strip().split("||")
+            labeldics[labelWord] = [labelNo, fieldDirection]
+    file.close()
+
+    #'I' 문장 제거
+    while idx < len(retocr):
+        if retocr[idx]["text"] == '' or retocr[idx]["text"] == '|' or retocr[idx]["text"] == ':':
+            del retocr[idx]
+            idx -= 1
+        if retocr[idx]["text"].find(':') > -1:
+            words = retocr[idx]["text"].split(":")
+            if len(words[0]) > 0 and len(words[1]) > 0:
+                tempdictLoc = list(map(int, retocr[idx]["location"].split(',')))
+                firstLoc = tempdictLoc
+                firstLoc[2] = tempdictLoc[2] - tempdictLoc[3] * (len(words[0]) / len(words[1]))
+                secondLoc = tempdictLoc
+                secondLoc[0] = secondLoc[0] + firstLoc[2] + tempdictLoc[3]
+                secondLoc[2] = tempdictLoc[2] - firstLoc[2] - tempdictLoc[3]
+
+                tempdict = {}
+                tempdict["text"] = words[0]
+                tempdict["location"] = ",".join(map(str, firstLoc))
+                retocr[idx] = tempdict
+                tempdict["text"] = words[1]
+                tempdict["location"] = ",".join(map(str, secondLoc))
+                retocr.insert(idx + 1, tempdict)
+        idx += 1
+
+    idx = 0
+    # 같은라인 문장 합치기 레이블 문장 합치기
+    while idx < len(retocr):
+        isCombiend, combineData = distanceParams(retocr[idx], mostCloseWordSameLine(retocr[idx],extractSameLine(retocr[idx],retocr, 30)))
+        if combineData:
+            # 같은 라인에 거리가 문장높이의 절반 이하일 경우 text는 합친다
+            if isCombiend < int(retocr[idx]["location"].split(",")[3]) / 1.5:
+                retocr[idx] = combiendText(retocr[idx], combineData)
+                retocr.remove(combineData)
+                idx -= 1
+            elif combiendLabelText(retocr[idx]["text"], combineData["text"], list(labeldics.keys())):
+                # 같은 줄에 다음 text와 합쳐서 레이블의 부분일 경우 합친다
+                retocr[idx] = combiendText(retocr[idx], combineData)
+                retocr.remove(combineData)
+                idx -= 1
+        idx += 1
+
+    labellist = {}
+    for item in retocr:
+        for tempdict in labeldics.keys():
+            ratio = similar(re.sub(regexp, '', item["text"].lower()), tempdict.lower())
+            if ratio > 0.8:
+                if item['location'] in labellist:
+                    if  labellist[item['location']][0] < ratio:
+                        labellist[item['location']] = [ratio, labeldics[tempdict]]
+                else:
+                    labellist[item['location']] = [ratio, labeldics[tempdict]]
+    retocr = findSingleField('Rebar', retocr, labellist)
+    retocr = findMultiField('Rebar', retocr, labellist, img)
+
+    return retocr
+
+def findMultiField(toptype, retocr, labellist, img):
+    #같은 라인에 있는 레이블끼리 집합생성
+    sameLineLabel = []
+    for key, value in labellist.items():
+        if value[1][1] == 'M':
+            location = list(map(int, key.split(",")))
+            if len(sameLineLabel) == 0:
+                sameLineLabel.append([[location, value[1][0]]])
+            else:
+                #기존 레이블과 동일 라인일 경우
+                addFlag = False
+                for lines in range(len(sameLineLabel)):
+                    for line in range(len(sameLineLabel[lines])):
+                        if not addFlag and abs(sameLineLabel[lines][line][0][1] - location[1]) < 16:
+                            sameLineLabel[lines].append([location, value[1][0]])
+                            addFlag = True
+                if not addFlag:
+                    sameLineLabel.append([[location, value[1][0]]])
+
+    #일반 송장에서 레이블이 복수 추출되었으나 품목이 추출 안된경우 품목 레이블 생성
+    if toptype == 'General':
+        for x in range(len(sameLineLabel)):
+            if len(sameLineLabel[x]) > 1:
+                minx = [5000]
+                existFlag = False
+                for y in range(len(sameLineLabel[x])):
+                    coords = sameLineLabel[x][y][0]
+                    if minx[0] > coords[0]:
+                        minx = coords
+                    if sameLineLabel[x][y][1] == '506':
+                        existFlag = True
+                if not existFlag:
+                    sameLineLabel[x].append([[round(minx[0]/2),minx[1],minx[2],minx[3]],'506'])
+
+    for x in range(len(sameLineLabel)):
+        if len(sameLineLabel[x]) > 1:
+            for y in range(len(sameLineLabel[x])):
+                coords = sameLineLabel[x][y][0]
+                labelno = sameLineLabel[x][y][1]
+                startx, endx = getSideLine(img, coords)
+                # startx, endx 사이에 있으면서 coords[1] + coords[3] 아래에 있는 문장을 labelno로 매핑
+                retocr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
     return retocr
 
 #싱글필드 추출
@@ -348,40 +482,11 @@ def findSingleField(toptype, retocr, labellist):
 
     return retocr
 
-def findMultiField(retocr, labellist, img):
-    #같은 라인에 있는 레이블끼리 집합생성
-    sameLineLabel = []
-    for key, value in labellist.items():
-        if value[1][1] == 'M':
-            location = list(map(int, key.split(",")))
-            if len(sameLineLabel) == 0:
-                sameLineLabel.append([[location, value[1][0]]])
-            else:
-                #기존 레이블과 동일 라인일 경우
-                addFlag = False
-                for lines in range(len(sameLineLabel)):
-                    for line in range(len(sameLineLabel[lines])):
-                        if not addFlag and abs(sameLineLabel[lines][line][0][1] - location[1]) < 16:
-                            sameLineLabel[lines].append([location, value[1][0]])
-                            addFlag = True
-                if not addFlag:
-                    sameLineLabel.append([[location, value[1][0]]])
-
-    for x in range(len(sameLineLabel)):
-        if len(sameLineLabel[x]) > 1:
-            for y in range(len(sameLineLabel[x])):
-                coords = sameLineLabel[x][y][0]
-                labelno = sameLineLabel[x][y][1]
-                startx, endx = getSideLine(img, coords)
-                # startx, endx 사이에 있으면서 coords[1] + coords[3] 아래에 있는 문장을 labelno로 매핑
-                retocr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
-    return retocr
-
 #영역내 멀티 필드 추출
 def rangedFiled(retocr, startx, endx, endy, labelno):
     print(labelno, 'start label ', startx, 'end label ', endx)
     blanklimit = 300
-    cursor = endy
+    cursor = endy + 30
     extractFields = []
     idx = 0
     while idx < len(retocr):
@@ -408,12 +513,12 @@ def rangedFiled(retocr, startx, endx, endy, labelno):
                 # 다음게 다른 라인
                 else:
                     cursor = nowy
-                    # print(labelno, '===', extractFields[idx])
+                    print(labelno, '===', extractFields[idx])
                     retocr = matchEntry(retocr, extractFields[idx], labelno)
             # 다음게 없을때
             else:
                 cursor = nowy
-                # print(labelno, '===', extractFields[idx])
+                print(labelno, '===', extractFields[idx])
                 retocr = matchEntry(retocr, extractFields[idx], labelno)
         #리미트 밖
         else:
@@ -623,32 +728,35 @@ def getAngleFromGoogle(response):
         first = []
         last = []
         maxlen = 0
-        for page in response.full_text_annotation.pages:
-            for block in page.blocks:
-                for paragraph in block.paragraphs:
-                    for word in paragraph.words:
-                        if len(word.symbols) > maxlen:
-                            maxlen = len(word.symbols)
-                            first = []
-                            last = []
-                            for symbol in word.symbols:
-                                if len(first) == 0:
-                                    first.append(symbol.bounding_box.vertices[0].x)
-                                    first.append(symbol.bounding_box.vertices[0].y)
-                                last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
-
-        myradians = math.atan2(first[1] - last[1], first[0] - last[0])
-        mydegrees = math.degrees(myradians)
-        mydegrees = mydegrees + 180
+        ocrData = []
 
         # 상위 5개 angle search start
         list = []
         temp = ''
         for page in response.full_text_annotation.pages:
+            pagewidth = page.width
+            pageheight = page.height
             for block in page.blocks:
                 for paragraph in block.paragraphs:
                     for word in paragraph.words:
-                        list.append({"length": len(word.symbols), "word": word})
+                        word_text = ''
+                        for symbol in word.symbols:
+                            if symbol.confidence > 0.25:
+                                word_text += symbol.text
+                        word_text = word_text.replace('"', '')
+                        x1 = word.bounding_box.vertices[0].x
+                        y1 = word.bounding_box.vertices[0].y
+                        x2 = word.bounding_box.vertices[1].x
+                        y2 = word.bounding_box.vertices[1].y
+                        x3 = word.bounding_box.vertices[2].x
+                        y3 = word.bounding_box.vertices[2].y
+                        x4 = word.bounding_box.vertices[3].x
+                        y4 = word.bounding_box.vertices[3].y
+                        location = [x1, y1, x2, y2, x3, y3, x4, y4]
+                        if x1 > 0 and y1 > 0 and word_text != "":
+                            ocrData.append({"location": location, "text": word_text})
+
+                        list.append({"length": len(word_text), "word": word})
         data = sorted(list, key=lambda l: (l['length']), reverse=True)
         retDegrees = []
 
@@ -665,17 +773,62 @@ def getAngleFromGoogle(response):
                     last = [symbol.bounding_box.vertices[0].x, symbol.bounding_box.vertices[0].y]
 
                 radians = math.atan2(first[1] - last[1], first[0] - last[0])
-                degrees = math.degrees(radians)
-                retDegrees.append(degrees)
+                retDegrees.append(radians)
                 i += 1
             else:
                 del data[i]
         # 상위 5개 angle search end
-        mydegrees = avgDegrees(retDegrees)
-        mydegrees = mydegrees + 180
-        return mydegrees
+        myradians = avgDegrees(retDegrees) + numpy.pi
+        mydegrees = math.degrees(myradians)
+        ocrData = newCoordFromRadian(ocrData, myradians, pagewidth, pageheight)
+        ocrData = sortLocX(sortLocY(ocrData))
+        return mydegrees, ocrData
     except Exception as e:
         print(e)
+
+def newCoordFromRadian(ocrData, myradians, pagewidth, pageheight):
+    #newOutline
+    minx, miny = getNewOutLine(myradians, pagewidth, pageheight)
+    for item in ocrData:
+        item['location'] = getNewCoords(item['location'], myradians, minx, miny)
+    return ocrData
+
+def getNewCoords(locaitonlist, myradians, minx, miny):
+    retCoord = []
+    for i in range(0, 8, 2):
+        retCoord.append(getNewCoord(locaitonlist[i], locaitonlist[i+1], myradians))
+    startx = round((retCoord[0][0] + retCoord[3][0]) / 2 - minx)
+    starty = round((retCoord[0][1] + retCoord[1][1]) / 2 - miny)
+    width =  round((retCoord[1][0] + retCoord[2][0]) / 2 - minx - startx)
+    height = round((retCoord[2][1] + retCoord[3][1]) / 2 - miny - starty)
+    location = str(startx) + ',' + str(starty) + ',' + str(width) + ',' + str(height)
+
+    return location
+
+def getNewOutLine(myradians, pagewidth, pageheight):
+    listx, listy = [], []
+    x, y = getNewCoord(pagewidth, 0, myradians)
+    listx.append(x)
+    listy.append(y)
+    x, y = getNewCoord(0, pageheight, myradians)
+    listx.append(x)
+    listy.append(y)
+    x, y = getNewCoord(pagewidth, pageheight, myradians)
+    listx.append(x)
+    listy.append(y)
+    minx = min(listx)
+    miny = min(listy)
+    if minx > 0:
+        minx = 0
+    if miny > 0:
+        miny = 0
+    return minx, miny
+
+
+def getNewCoord(oldx, oldy, radian):
+    new_x = round(math.cos(-radian) * oldx - math.sin(-radian) * oldy)
+    new_y = round(math.sin(-radian) * oldx + math.cos(-radian) * oldy)
+    return [new_x, new_y]
 
 def avgDegrees(arr):
     for i in range(7):
@@ -688,6 +841,7 @@ def avgDegrees(arr):
 def getRotateImage(imgPre):
     try:
         item = cv.imread(imgPre)
+
         client = vision.ImageAnnotatorClient()
         success, encoded_image = cv.imencode('.jpg', item)
         content = encoded_image.tobytes()
@@ -697,7 +851,7 @@ def getRotateImage(imgPre):
         response = client.document_text_detection(image=image)
         # content = encoded_image.tobytes()
 
-        mydegrees = getAngleFromGoogle(response)
+        mydegrees, ocrData = getAngleFromGoogle(response)
         print(mydegrees)
         # image = cv.imread(item)
 
@@ -736,8 +890,8 @@ def getRotateImage(imgPre):
             for x1, y1, x2, y2 in lines[i]:
                 myradians = math.atan2(y1 - y2, x1 - x2)
                 tempmydegrees = math.degrees(myradians)
-                # print(tempmydegrees)
-                # print('x1: ' + repr(x1) + 'y1: ' + repr(y1) + 'x2: ' + repr(x2) + 'y2: ' + repr(y2))
+                print(tempmydegrees)
+                print('x1: ' + repr(x1) + 'y1: ' + repr(y1) + 'x2: ' + repr(x2) + 'y2: ' + repr(y2))
                 if tempmydegrees < -85.0 and tempmydegrees > -95.0:
                     cv.line(thresh1, (x1, y1), (x2, y2), (0, 0, 255), 4)
                     dx = x2 - x1
@@ -745,9 +899,7 @@ def getRotateImage(imgPre):
                     if math.sqrt((dx * dx) + (dy * dy)) > longestlength:
                         longestlength = math.sqrt((dx * dx) + (dy * dy))
                         longlineDegree = tempmydegrees
-        # cv.imshow('img1', cv.resize(thresh1, None, fx=0.15, fy=0.15))
-        # cv.waitKey(0)
-        # cv.destroyAllWindows()
+
         M = cv.getRotationMatrix2D(center, mydegrees + longlineDegree + 90, 1)
 
         newX, newY = w, h
@@ -760,10 +912,16 @@ def getRotateImage(imgPre):
         M[1, 2] += ty
         rotated = cv.warpAffine(item, M, (int(newX), int(newY)),
                                 flags=cv.INTER_CUBIC, borderMode=cv.BORDER_REPLICATE)
+
+        # for item in ocrData:
+        #     coords = [int(i) for i in item['location'].split(",")]
+        #     cv.line(rotated, (coords[0], coords[1]), (coords[0] + coords[2], coords[1] + coords[3]), (0, 0, 255), 3)
+
         # cv.imshow('img1', cv.resize(rotated, None, fx=0.15, fy=0.15))
         # cv.waitKey(0)
         # cv.destroyAllWindows()
-        return rotated
+
+        return rotated, ocrData
     except Exception as e:
         print(e)
 
@@ -1175,21 +1333,21 @@ def extractSameLine(tempdict, temparr, yInterval):
         raise Exception(str(
             {'code': 500, 'message': 'extractSameLine fail', 'error': str(e).replace("'", "").replace('"', '')}))
 
-#temparr에서 tempdict와 가장 가까운 원소를 찾는다
-def mostCloseWordSameLine(tempdict, temparr):
+def mostCloseWordSameLine(base, cadidates):
     try:
         retDict = {}
-        tempdictLoc = tempdict["location"].split(',')
-        min = 3000
-        if len(temparr) != 0:
-            for temp in temparr:
-                tempLoc = temp["location"].split(',')
-                dx = abs(int(tempdictLoc[0]) + int(tempdictLoc[2]) - int(tempLoc[0]))
-                dy = abs(int(tempdictLoc[1]) - int(tempLoc[1]))
-                dist = math.sqrt( math.pow(dx, 2) + math.pow(dy, 2) )
-                if dist < min:
-                    min = dist;
-                    retDict = temp
+        baseLoc = list(map(int, base["location"].split(',')))
+        min = 10000
+        if len(cadidates) != 0:
+            for cadidate in cadidates:
+                cadidateLoc = list(map(int, cadidate["location"].split(',')))
+                dx = abs((baseLoc[0] + baseLoc[2]) - cadidateLoc[0] - 10)
+                if dx > 0:
+                    dy = abs(baseLoc[1] - cadidateLoc[1])
+                    dist = math.sqrt( math.pow(dx, 2) + math.pow(dy, 2))
+                    if dist < min:
+                        min = dist;
+                        retDict = cadidate
 
         return retDict
 
@@ -1621,7 +1779,7 @@ def convertPdfToImage(upload_path, pdf_file):
             filename = "%s-%d.jpg" % (pdf_file, pages.index(page))
             print('filename===>' + filename)
             page.save(upload_path + filename, "JPEG", dpi=(500,500))
-            # page.save(upload_path + "chg_" + filename, "JPEG", dpi=(300,300))
+            page.save(upload_path + "org_" + filename, "JPEG", dpi=(300,300))
             filenames.append(filename)
         return filenames
     except Exception as e:
