@@ -155,7 +155,11 @@ def upload_file_google():
                 # imgResize(upload_path + item)
                 # obj = pyOcr_google(upload_path + item, convertFilename)
 
+                msOcr = get_Ocr_Info(upload_path + item)
                 rotatedImg, retOcr = getRotateImage(upload_path + item)
+                cv.imwrite(upload_path + "org_" + item, rotatedImg)
+                retOcr = plusMsOcr(retOcr, msOcr)
+                retOcr = sortLocX(sortLocY(retOcr))
                 docTopType, docType, maxNum = findDocType(retOcr)
 
                 if maxNum < 0.3:
@@ -167,6 +171,8 @@ def upload_file_google():
                     retOcr = textPreprocessGeneral(retOcr, rotatedImg)
                 elif docTopType == 61:
                     retOcr = textPreprocessRebar(retOcr, rotatedImg)
+
+                findColByML(retOcr)
 
                 retOcr, retImg = updLocation(retOcr, rotatedImg, docTopType)
                 retOcr = companyInfoInsert(retOcr, docTopType, docType)
@@ -256,6 +262,53 @@ def insertSplitData():
 #         raise Exception(str({'code': 500, 'message': 'lineDelete error',
 #                              'error': str(ex).replace("'", "").replace('"', '')}))
 
+def plusMsOcr(ocrData, msOcr):
+
+    ocrRange = 30
+    insertOcr = []
+
+    for item in msOcr:
+        mloc = [int(i) for i in item['location'].split(",")]
+        mx1 = mloc[0]
+        mx2 = mloc[0] + mloc[2]
+        my1 = mloc[1]
+        my2 = mloc[1] + mloc[3]
+
+        insBool = True
+
+        for gitem in ocrData:
+            gloc = [int(i) for i in gitem['location'].split(",")]
+            gx1 = gloc[0]
+            gx2 = gloc[0] + gloc[2]
+            gy1 = gloc[1]
+            gy2 = gloc[1] + gloc[3]
+
+            if gx1 < mx1 < gx2 and gy1 < my1 < gy2:
+                insBool = False
+                break
+
+            if gx1 < mx2 < gx2 and gy1 < my2 < gy2:
+                insBool = False
+                break
+
+            if mx1 - ocrRange < gx1 < mx2 + ocrRange and my1 - ocrRange < gy1 < my2 + ocrRange:
+                insBool = False
+                break
+
+            if mx1 - ocrRange < gx2 < mx2 + ocrRange and my1 - ocrRange < gy2 < my2 + ocrRange:
+                insBool = False
+                break
+
+
+        if insBool == True:
+            print(insBool, item)
+            insertOcr.append(item)
+
+    for item in insertOcr:
+        ocrData.append(item)
+
+    return ocrData
+
 def textPreprocessGeneral(retocr, img):
     idx = 0
     labeldics = {}
@@ -280,9 +333,12 @@ def textPreprocessGeneral(retocr, img):
                 tempdictLoc = list(map(int, retocr[idx]["location"].split(',')))
                 firstLoc = tempdictLoc
                 firstLoc[2] = tempdictLoc[2] - tempdictLoc[3] * (len(words[0]) / len(words[1]))
+                firstLoc[2] = int(firstLoc[2])
                 secondLoc = tempdictLoc
                 secondLoc[0] = secondLoc[0] + firstLoc[2] + tempdictLoc[3]
+                secondLoc[0] = int(secondLoc[0])
                 secondLoc[2] = tempdictLoc[2] - firstLoc[2] - tempdictLoc[3]
+                secondLoc[2] = int(secondLoc[2])
 
                 tempdict = {}
                 tempdict["text"] = words[0]
@@ -330,7 +386,6 @@ def textPreprocessRebar(retocr, img):
     idx = 0
     labeldics = {}
     regexp = "[-=+,#/\?:^$.@*\"※~&%ㆍ!』\\‘|\(\)\[\]\<\>`\'…》]"
-    orgretocr = retocr
     file = open("rebarLabel.txt", "r", encoding="UTF-8-sig")
     for line in file:
         if line is None:
@@ -367,10 +422,10 @@ def textPreprocessRebar(retocr, img):
     idx = 0
     # 같은라인 문장 합치기 레이블 문장 합치기
     while idx < len(retocr):
-        isCombiend, combineData = distanceParams(retocr[idx], mostCloseWordSameLine(retocr[idx],extractSameLine(retocr[idx],retocr, 30)))
+        isCombiend, combineData = distanceParams(retocr[idx], mostCloseWordSameLine(retocr[idx],extractSameLine(retocr[idx],retocr, 22)))
         if combineData:
             # 같은 라인에 거리가 문장높이의 절반 이하일 경우 text는 합친다
-            if isCombiend < int(retocr[idx]["location"].split(",")[3]) / 1.5:
+            if isCombiend < int(retocr[idx]["location"].split(",")[3]) / 1.5 and not retocr[idx]["text"] in labeldics.keys():
                 retocr[idx] = combiendText(retocr[idx], combineData)
                 retocr.remove(combineData)
                 idx -= 1
@@ -409,7 +464,7 @@ def findMultiField(toptype, retocr, labellist, img):
                 addFlag = False
                 for lines in range(len(sameLineLabel)):
                     for line in range(len(sameLineLabel[lines])):
-                        if not addFlag and abs(sameLineLabel[lines][line][0][1] - location[1]) < 16:
+                        if not addFlag and abs(sameLineLabel[lines][line][0][1] - location[1]) < 50:
                             sameLineLabel[lines].append([location, value[1][0]])
                             addFlag = True
                 if not addFlag:
@@ -425,11 +480,11 @@ def findMultiField(toptype, retocr, labellist, img):
                     coords = sameLineLabel[x][y][0]
                     if minx[0] > coords[0]:
                         minx = coords
-                    if sameLineLabel[x][y][1] == '506':
+                    if sameLineLabel[x][y][1] == '504':
                         existFlag = True
                 if not existFlag:
-                    sameLineLabel[x].append([[round(minx[0]/2),minx[1],minx[2],minx[3]],'506'])
-
+                    sameLineLabel[x].append([[round(minx[0]/2),minx[1],minx[2],minx[3]],'504'])
+    allResultArr = []
     for x in range(len(sameLineLabel)):
         if len(sameLineLabel[x]) > 1:
             for y in range(len(sameLineLabel[x])):
@@ -437,7 +492,111 @@ def findMultiField(toptype, retocr, labellist, img):
                 labelno = sameLineLabel[x][y][1]
                 startx, endx = getSideLine(img, coords)
                 # startx, endx 사이에 있으면서 coords[1] + coords[3] 아래에 있는 문장을 labelno로 매핑
-                retocr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
+                retocr, resultArr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
+                allResultArr = allResultArr + resultArr
+
+    stopwords = []
+    deletewords = []
+    file = open("bannedWord.txt", "r", encoding="UTF-8-sig")
+    for line in file:
+        if line is None:
+            print("bannedWord line is Null")
+        else:
+            keyword, type, usage = line.strip().split("||")
+            if toptype == type:
+                if usage == 'stop':
+                    stopwords.append(keyword)
+                if usage == 'delete':
+                    deletewords.append(keyword)
+    file.close()
+
+    sameLineField = []
+    stopLine = []
+    deletelines = []
+    for result in allResultArr:
+        location = list(map(int, result[0].split(",")))
+        if len(sameLineField) == 0:
+            sameLineField.append([[location, result[1], result[2]]])
+            if result[2] in stopwords:
+                stopLine.append(location[1])
+            if result[2] in deletewords:
+                deletelines.append(location[1])
+        else:
+            # 기존 필드와 동일 라인일 경우
+            addFlag = False
+            for lines in range(len(sameLineField)):
+                for line in range(len(sameLineField[lines])):
+                    if not addFlag and abs(sameLineField[lines][line][0][1] - location[1]) < 30:
+                        sameLineField[lines].append([location, result[1], result[2]])
+                        if result[2] in stopwords:
+                            stopLine.append(location[1])
+                        if result[2] in deletewords:
+                            deletelines.append(location[1])
+                        addFlag = True
+            if not addFlag:
+                sameLineField.append([[location, result[1], result[2]]])
+                if result[2] in stopwords:
+                    stopLine.append(location[1])
+
+                if result[2] in deletewords:
+                    deletelines.append(location[1])
+
+    stopMinLine = 100000
+    if len(stopLine) != 0:
+        stopMinLine = min(stopLine)
+
+    print('stopLine ====== ', stopMinLine)
+    #stop delete words 처리
+    for item in retocr:
+        for result in allResultArr:
+            if item['location'] == result[0] and list(map(int, result[0].split(",")))[1] < stopMinLine - 30:
+                deleteFlag = False
+                for deleteline in deletelines:
+                    if abs(deleteline - list(map(int, result[0].split(",")))[1]) < 30:
+                        deleteFlag = True
+                if not deleteFlag:
+                    item['entryLbl'] = result[1]
+                    print(result[0], '\t', result[1], '\t', result[2])
+
+    secondStopLine = 0
+    if stopMinLine != 100000:
+
+        allResultArr = []
+        for x in range(len(sameLineLabel)):
+            if len(sameLineLabel[x]) > 1 and int(sameLineLabel[x][0][0][1]) > stopMinLine:
+                for y in range(len(sameLineLabel[x])):
+                    coords = sameLineLabel[x][y][0]
+                    labelno = sameLineLabel[x][y][1]
+                    startx, endx = getSideLine(img, coords)
+                    # startx, endx 사이에 있으면서 coords[1] + coords[3] 아래에 있는 문장을 labelno로 매핑
+                    retocr, resultArr = rangedFiled(retocr, startx, endx, coords[1] + coords[3], labelno)
+                    allResultArr = allResultArr + resultArr
+            secondStopLine = sameLineLabel[x][0][0][1] + sameLineLabel[x][0][0][3]
+
+        delStopLine = []
+        for x in stopLine:
+            if x < secondStopLine:
+                delStopLine.append(x)
+
+        for x in delStopLine:
+            stopLine.remove(x)
+
+        stopMinLine = 100000
+        if len(stopLine) != 0:
+            stopMinLine = min(stopLine)
+
+        print('stopLine ====== ', stopMinLine)
+        for item in retocr:
+            for result in allResultArr:
+                if item['location'] == result[0] and list(map(int, result[0].split(",")))[1] < stopMinLine - 30:
+                    deleteFlag = False
+                    for deleteline in deletelines:
+                        if abs(deleteline - list(map(int, result[0].split(",")))[1]) < 30:
+                            deleteFlag = True
+                    if not deleteFlag:
+                        item['entryLbl'] = result[1]
+                        print(result[0], '\t', result[1], '\t', result[2])
+
     return retocr
 
 #싱글필드 추출
@@ -468,19 +627,68 @@ def findSingleField(toptype, retocr, labellist):
         for textlist in fixList[serialno]:
             for item in retocr:
                 ratio = similar(makeParts(textlist), makeParts(item["text"]))
-                if ratio > 0.7 and ratio > maxRatio:
+                if ratio > 0.5 and ratio > maxRatio:
                     maxRatio = ratio
                     resultDic[serialno] = item["text"]
-                    print(serialno,'\t',item["text"],'\t',maxRatio)
 
-    resultLists = resultDic.items()
+    #방향이 있는 싱글 검색  R L D
+    for key, value in labellist.items():
+        direction = value[1][1]
+        if direction == 'R' or direction == 'L' or direction == 'D' or direction == 'RD':
+            resultDic = findSingleFieldFromDirection(resultDic, retocr, direction, key, value[1][0])
+    resultLists = []
+    for key, value in resultDic.items():
+        list = []
+        list.append(key)
+        list.append(value)
+        resultLists.append(list)
 
     for item in retocr:
         for resultList in resultLists:
             if item['text'] == resultList[1]:
                 item['entryLbl'] = resultList[0]
-
+                print(resultList[0], '\t', resultList[1])
+                if toptype == 'Rebar':
+                    resultLists.remove(resultList)
     return retocr
+
+def findSingleFieldFromDirection(resultDic, retocr, direction, coords, label):
+    try:
+        retDict = {}
+        baseLoc = list(map(int, coords.split(',')))
+        min = 700
+        if direction == 'R' or direction == 'RD':
+            findFlag = False
+            for item in retocr:
+                location = list(map(int, item['location'].split(",")))
+                if abs(baseLoc[1] - location[1]) < 13 and location[0] - baseLoc[0] > 0 and location[0] - baseLoc[0] < min:
+                    if label == "892":
+                        if hasNumbers(item["text"]):
+                            min = location[0] - baseLoc[0]
+                            resultDic[label] = item["text"]
+                            findFlag = True
+                    else:
+                        min = location[0] - baseLoc[0]
+                        resultDic[label] = item["text"]
+                        findFlag = True
+            if  direction == 'RD' and not findFlag:
+                for item in retocr:
+                    location = list(map(int, item['location'].split(",")))
+                    startx = baseLoc[0] - 50
+                    endx = baseLoc[0] + baseLoc[2] + 50
+                    locationcenter = location[0] + (location[2] / 2)
+                    if locationcenter > startx and endx > locationcenter and location[1] - baseLoc[1] > 0 and location[1] - baseLoc[1] < min:
+                        min = location[1] - baseLoc[1]
+                        resultDic[label] = item["text"]
+
+        return resultDic
+
+    except Exception as e:
+        raise Exception(str(
+            {'code': 500, 'message': 'mostCloseWordSameLine fail', 'error': str(e).replace("'", "").replace('"', '')}))
+
+def hasNumbers(inputString):
+    return any(char.isdigit() for char in inputString)
 
 #영역내 멀티 필드 추출
 def rangedFiled(retocr, startx, endx, endy, labelno):
@@ -498,6 +706,7 @@ def rangedFiled(retocr, startx, endx, endy, labelno):
         idx += 1
     # 추출된 엔트리들중 같은 라인에 있는 문장 합치기
     idx = 0
+    resultArr = []
     for idx in range(len(extractFields)):
         nowy = list(map(int, extractFields[idx]["location"].split(",")))[1]
         #리미트 안에 있는지
@@ -513,17 +722,17 @@ def rangedFiled(retocr, startx, endx, endy, labelno):
                 # 다음게 다른 라인
                 else:
                     cursor = nowy
+                    resultArr.append([extractFields[idx]["location"], labelno, extractFields[idx]["text"]])
                     print(labelno, '===', extractFields[idx])
-                    retocr = matchEntry(retocr, extractFields[idx], labelno)
             # 다음게 없을때
             else:
                 cursor = nowy
+                resultArr.append([extractFields[idx]["location"], labelno, extractFields[idx]["text"]])
                 print(labelno, '===', extractFields[idx])
-                retocr = matchEntry(retocr, extractFields[idx], labelno)
         #리미트 밖
         else:
             break
-    return retocr
+    return retocr, resultArr
 
 def matchEntry(ocrData, extractFields, labelno):
     for item in ocrData:
@@ -554,7 +763,7 @@ def getSideLine(img, coords):
     edges = cv.Canny(item, 50, 200, apertureSize=3)
     minLineLength = 3500
     maxLineGap = 80
-    findLimit = 1500
+    findLimit = 1000
 
     height, width = img.shape[:2]
     # 레이블의 y좌표
@@ -755,6 +964,7 @@ def getAngleFromGoogle(response):
                         location = [x1, y1, x2, y2, x3, y3, x4, y4]
                         if x1 > 0 and y1 > 0 and word_text != "":
                             ocrData.append({"location": location, "text": word_text})
+                            print({"location": location, "text": word_text})
 
                         list.append({"length": len(word_text), "word": word})
         data = sorted(list, key=lambda l: (l['length']), reverse=True)
@@ -1318,15 +1528,17 @@ def sortLocX(data):
             {'code': 500, 'message': 'sortLocX fail', 'error': str(e).replace("'", "").replace('"', '')}))
 
 #temparr에서 tempdict와 같은 라인에 있는 원소를 찾는다
-def extractSameLine(tempdict, temparr, yInterval):
+def extractSameLine(sourceItem, targetarr, yInterval):
     try:
         dictArr = []
-        tempdictLoc = tempdict["location"].split(',')
-
-        for temp in temparr:
-            if temp["text"] != "" and tempdict["location"] != temp["location"] and int(tempdictLoc[1]) >= int(temp["location"].split(',')[1]) - yInterval and int(tempdictLoc[1]) <= int(temp["location"].split(',')[1]) + yInterval:
-                dictArr.append(temp)
-
+        sourceItemLoc = list(map(int, sourceItem["location"].split(',')) )
+        starty = sourceItemLoc[1] - yInterval
+        endy = sourceItemLoc[1] + yInterval
+        for targetitem in targetarr:
+            if targetitem["text"] != "" and sourceItem["location"] != targetitem["location"]:
+                targetItemLoc = list(map(int, targetitem["location"].split(',')))
+                if starty < targetItemLoc[1] and endy > targetItemLoc[1]:
+                    dictArr.append(targetitem)
         return dictArr
 
     except Exception as e:
@@ -1341,7 +1553,7 @@ def mostCloseWordSameLine(base, cadidates):
         if len(cadidates) != 0:
             for cadidate in cadidates:
                 cadidateLoc = list(map(int, cadidate["location"].split(',')))
-                dx = abs((baseLoc[0] + baseLoc[2]) - cadidateLoc[0] - 10)
+                dx =  cadidateLoc[0] + 14 - (baseLoc[0] + baseLoc[2])
                 if dx > 0:
                     dy = abs(baseLoc[1] - cadidateLoc[1])
                     dist = math.sqrt( math.pow(dx, 2) + math.pow(dy, 2))
@@ -1780,37 +1992,32 @@ def convertPdfToImage(upload_path, pdf_file):
             print('filename===>' + filename)
             page.save(upload_path + filename, "JPEG", dpi=(500,500))
             page.save(upload_path + "org_" + filename, "JPEG", dpi=(300,300))
+            img = imgResize4200(cv.imread(upload_path + filename))
+            cv.imwrite(upload_path + filename, img)
             filenames.append(filename)
         return filenames
     except Exception as e:
         print(e)
 
-def imgResize(inputimg):
+def imgResize(img):
     try:
         FIX_LONG = 2970
         FIX_SHORT = 2100
-
-        index = 0
-
-        img = inputimg
-        height, width = img.shape[:2]
-        imagetype = "hori"
-        # 배율
-        magnify = 1
-        if (height / width) > (FIX_LONG / FIX_SHORT):
-            magnify = round((FIX_LONG / height) - 0.005, 2)
-        else:
-            magnify = round((FIX_SHORT / width) - 0.005, 2)
-
-        # 확대, 축소
-        img = cv.resize(img, dsize=(0, 0), fx=magnify, fy=magnify, interpolation=cv.INTER_LINEAR)
-        height, width = img.shape[:2]
-        # 여백 생성
-        img = cv.copyMakeBorder(img, 0, FIX_LONG - height, 0, FIX_SHORT - width, cv.BORDER_CONSTANT,
-                                value=[255, 255, 255])
+        img = cv.resize(img, dsize=(FIX_SHORT, FIX_LONG), interpolation=cv.INTER_LINEAR)
 
         return img
+    except Exception as ex:
+        raise Exception(
+            str({'code': 500, 'message': 'imgResize error', 'error': str(ex).replace("'", "").replace('"', '')}))
 
+
+def imgResize4200(img):
+    try:
+        FIX_LONG = 4200
+        FIX_SHORT = 4200
+        img = cv.resize(img, dsize=(FIX_SHORT, FIX_LONG), interpolation=cv.INTER_LINEAR)
+
+        return img
     except Exception as ex:
         raise Exception(
             str({'code': 500, 'message': 'imgResize error', 'error': str(ex).replace("'", "").replace('"', '')}))
@@ -1905,12 +2112,20 @@ def get_Ocr_Info(filePath):
         response = conn.getresponse()
         data = response.read()
         data = json.loads(data)
-        data = ocrParsing(data)
+        data = ocrParsingOne(data)
         conn.close()
 
         return data
     except Exception as e:
         print("[Errno {0}] {1}".format(e.errno, e.strerror))
+
+def ocrParsingOne(body):
+    data = []
+    for i in body["regions"]:
+        for j in i["lines"]:
+            for k in j["words"]:
+                data.append({"location":k["boundingBox"], "text":k['text']})
+    return data
 
 def ocrParsing(body):
     data = []
@@ -2163,40 +2378,25 @@ def findEntry(ocrData):
 
     return ocrData
 
-
 def findColByML(ocrData):
-    obj = [{'yData': 'aaa1', 'text': 'bbb1', 'xData': 'ccc1', 'location': 44},
-           {'yData': 'aaa2', 'text': 'bbb2', 'xData': 'ccc2', 'location': 530},
-           {'yData': 'aaa3', 'text': 'bbb3', 'xData': 'ccc3', 'location': 81},
-           {'yData': 'aaa4', 'text': 'bbb4', 'xData': 'ccc4', 'location': 1234},
-           {'yData': 'aaa5', 'text': 'bbb5', 'xData': 'ccc5', 'location': 1039}]
-
-    resultObj = {}
-    colName = ["xData", "yData", "text", "location"]
-    dataArr = []
-    for qq in obj:
-        tmpArr = [qq.get('xData'),
-                  qq.get('yData'),
-                  qq.get('text'),
-                  qq.get('location')
-                  ]
-        dataArr.append(tmpArr)
-
-    resultObj['ColumnNames'] = colName;
-    resultObj['Values'] = dataArr;
-
     data = {
+
         "Inputs": {
-            "input1": resultObj,
-        },
+
+            "input1":
+                {
+                    "ColumnNames": ["age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country"],
+                    "Values": [["0", "value", "0", "value", "0", "value", "value", "value", "value", "value", "0", "0", "0", "value"], ["0", "value", "0", "value", "0", "value", "value", "value", "value", "value", "0", "0", "0", "value"], ]
+                }, },
         "GlobalParameters": {
         }
     }
 
     body = str.encode(json.dumps(data))
-    api_key = 'Glka58B/GkaysKmq01K/1S7zIhiuAPo1k9l1wq/8Z6NjrQGTMJs4cbMXiV0a2Lr5eVggch1aIDQjUDKaCLpYEA=='
+
+    url = 'https://ussouthcentral.services.azureml.net/workspaces/f0f7964960e14b1d9120fba8a7b6b792/services/eeabaa5bf2aa4339a7975744a0c800fd/execute?api-version=2.0&details=true'
+    api_key = 'ZnGeAKywPE9J5aonBkBtrHU8qyuGypRMGq3G+8xVNeP1N47uM1VgHS495g8EKl4inLRxy8EX5PBBD8coyYiqqw=='  # Replace this with the API key for the web service
     headers = {'Content-Type': 'application/json', 'Authorization': ('Bearer ' + api_key)}
-    url = 'https://ussouthcentral.services.azureml.net/workspaces/a2de641a3e3a40d7b85125db08cf4a97/services/9ca98ef979444df8b1fcbecc329c46bd/execute?api-version=2.0&details=true'
 
     req = urllib.request.Request(url, body, headers)
 
@@ -2285,6 +2485,14 @@ def companyInfoInsert(ocrData, docTopType, docType):
                 if "companyName" in rows:
                     obj = {}
                     obj["entryLbl"] = "502"
+                    obj["location"] = rows["companyName"].split("@@")[1]
+                    obj["text"] = rows["companyName"].split("@@")[0]
+                    ocrData.append(obj)
+
+            if int(docTopType) == 61:
+                if "companyName" in rows:
+                    obj = {}
+                    obj["entryLbl"] = "853"
                     obj["location"] = rows["companyName"].split("@@")[1]
                     obj["text"] = rows["companyName"].split("@@")[0]
                     ocrData.append(obj)

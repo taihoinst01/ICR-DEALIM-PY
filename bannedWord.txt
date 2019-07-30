@@ -1,0 +1,14 @@
+총합||Rebar||stop
+누계출고중량||Rebar||stop
+계||Rebar||stop
+여백||General||stop
+수량||General||delete
+규격||General||delete
+판||General||stop
+※※※※※이하여백※※※※※||General||stop
+******||General||stop
+상기임대자재를||General||stop
+품명규격-||General||delete
+***이하여백★★★||General||stop
+***이하여백***||General||stop
+(EA)||Rebar||delete
