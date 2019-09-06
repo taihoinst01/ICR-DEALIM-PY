@@ -472,6 +472,14 @@ def findMultiField(toptype, retocr, labellist, img):
 
     #일반 송장에서 레이블이 복수 추출되었으나 품목이 추출 안된경우 품목 레이블 생성
     if toptype == 'General':
+
+        for x in range(len(sameLineLabel)):
+            if len(sameLineLabel[x]) > 1:
+                for y in range(len(sameLineLabel[x])):
+                    for j in range(y, len(sameLineLabel[x])):
+                        if sameLineLabel[x][y][1] < sameLineLabel[x][j][1]:
+                            sameLineLabel[x][y], sameLineLabel[x][j] = sameLineLabel[x][j], sameLineLabel[x][y]
+
         for x in range(len(sameLineLabel)):
             if len(sameLineLabel[x]) > 1:
                 minx = [5000]
