@@ -2388,22 +2388,36 @@ def findEntry(ocrData):
 
 def findColByML(ocrData):
     data = {
-
         "Inputs": {
-
             "input1":
-                {
-                    "ColumnNames": ["age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country"],
-                    "Values": [["0", "value", "0", "value", "0", "value", "value", "value", "value", "value", "0", "0", "0", "value"], ["0", "value", "0", "value", "0", "value", "value", "value", "value", "value", "0", "0", "0", "value"], ]
-                }, },
+                [
+                    {
+                        'age': "1",
+                        'workclass': "",
+                        'fnlwgt': "1",
+                        'education': "",
+                        'education-num': "1",
+                        'marital-status': "",
+                        'occupation': "",
+                        'relationship': "",
+                        'race': "",
+                        'sex': "",
+                        'capital-gain': "1",
+                        'capital-loss': "1",
+                        'hours-per-week': "1",
+                        'native-country': "",
+                        'income': "",
+                    }
+                ],
+        },
         "GlobalParameters": {
         }
     }
 
     body = str.encode(json.dumps(data))
 
-    url = 'https://ussouthcentral.services.azureml.net/workspaces/f0f7964960e14b1d9120fba8a7b6b792/services/eeabaa5bf2aa4339a7975744a0c800fd/execute?api-version=2.0&details=true'
-    api_key = 'ZnGeAKywPE9J5aonBkBtrHU8qyuGypRMGq3G+8xVNeP1N47uM1VgHS495g8EKl4inLRxy8EX5PBBD8coyYiqqw=='  # Replace this with the API key for the web service
+    url = 'https://japaneast.services.azureml.net/subscriptions/9e858cd42d894ad9bdd4162656427195/services/6d2704c532bc4029b442dd9028b483a5/execute?api-version=2.0&format=swagger'
+    api_key = 'yolFt6IRTLjwC5GEPKo7Z8Ix331ovWi1Awh2+AYtm0YM8FfnzAtwU7MHiZL/mEMrOymaEjG5u7r6H5P/cjnpng=='  # Replace this with the API key for the web service
     headers = {'Content-Type': 'application/json', 'Authorization': ('Bearer ' + api_key)}
 
     req = urllib.request.Request(url, body, headers)
